@@ -32,6 +32,7 @@ from tools.live_e2e.report import (
     update_cleanup_result,
 )
 from tools.live_e2e.runner import (
+    _CI_ENVIRONMENT_SIGNALS,
     ACCOUNT_CONFIRMATION,
     APPROVAL_ENVIRONMENT,
     CREATE_CONFIRMATION,
@@ -523,6 +524,8 @@ def test_live_e2e_zones_bind_to_cdk_provider_context() -> None:
 
 
 def test_run_stays_locked_without_every_confirmation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    for signal in _CI_ENVIRONMENT_SIGNALS:
+        monkeypatch.delenv(signal, raising=False)
     root = _root(tmp_path)
     runner = LiveE2ERunner(root=root, aws_factory=lambda **_: pytest.fail("AWS must not be called"))
     run_id = "e2e-locked-run"
