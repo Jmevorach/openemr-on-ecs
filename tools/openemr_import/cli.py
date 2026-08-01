@@ -107,6 +107,14 @@ def _context_matches_receipt(context: Any, receipt: Any) -> None:
         "account": (context.account_id, receipt.account_id),
         "region": (context.region, receipt.region),
         "stack": (context.stack_name, receipt.stack_name),
+        "stack creation time": (
+            context.stack_creation_time,
+            receipt.stack_creation_time,
+        ),
+        "stack last update": (
+            context.stack_last_updated_time,
+            receipt.stack_last_updated_time,
+        ),
         "cluster": (context.cluster_name, receipt.cluster_name),
         "service": (context.service_name, receipt.service_name),
         "service URL": (context.service_url, receipt.service_url),
@@ -116,6 +124,20 @@ def _context_matches_receipt(context: Any, receipt: Any) -> None:
             receipt.task_definition_arn,
         ),
         "staging bucket": (context.staging_bucket, receipt.staging_bucket),
+        "staging KMS key": (
+            context.staging_kms_key_arn,
+            receipt.staging_kms_key_arn,
+        ),
+        "task security group": (
+            context.task_security_group_id,
+            receipt.task_security_group_id,
+        ),
+        "private subnets": (
+            context.private_subnet_ids,
+            receipt.private_subnet_ids,
+        ),
+        "database": (context.database_arn, receipt.database_arn),
+        "EFS file system": (context.efs_arn, receipt.efs_arn),
     }
     mismatches = [name for name, (actual, expected) in comparisons.items() if actual != expected]
     if mismatches:
@@ -145,6 +167,8 @@ def _execute_command(args: argparse.Namespace) -> int:
     from .aws import (
         acquire_import_lock,
         assert_application_healthy,
+        assert_import_resource_bindings,
+        assert_new_import_target,
         assert_service_autoscaling_active,
         assert_service_stable,
         cleanup_staging_scope,
@@ -214,6 +238,8 @@ def _execute_command(args: argparse.Namespace) -> int:
                 "Stack is not marked as a fresh import target; redeploy it with "
                 "-c openemr_import_target=true before execution"
             )
+        assert_new_import_target(context)
+        assert_import_resource_bindings(context, session=session)
         original_desired_count = assert_service_stable(context, session=session)
         assert_service_autoscaling_active(context, session=session)
         recovery_points = recent_recovery_points(
@@ -251,14 +277,18 @@ def _execute_command(args: argparse.Namespace) -> int:
         lock_acquired = True
         prelaunch_state["status"] = "lock-acquired"
         atomic_write_json(state_path, prelaunch_state)
-        source_key = upload_source(
+        source_key = f"migrations/{plan.migration_id}/source.tar"
+        prelaunch_state["source_key"] = source_key
+        atomic_write_json(state_path, prelaunch_state)
+        uploaded_key = upload_source(
             context,
             session=session,
             migration_id=plan.migration_id,
             source=args.source,
         )
+        if uploaded_key != source_key:
+            raise ToolError("Import staging upload returned an unexpected object key")
         prelaunch_state["status"] = "source-staged"
-        prelaunch_state["source_key"] = source_key
         atomic_write_json(state_path, prelaunch_state)
         quiesced = True
         set_service_autoscaling_suspended(
@@ -327,6 +357,7 @@ def _execute_command(args: argparse.Namespace) -> int:
                 region=context.region,
                 staging_bucket=context.staging_bucket,
                 migration_id=plan.migration_id,
+                expected_bucket_owner=context.account_id,
                 session=session,
             )
         if lock_acquired and context is not None:
@@ -335,7 +366,16 @@ def _execute_command(args: argparse.Namespace) -> int:
                 session=session,
                 migration_id=plan.migration_id,
             )
-        state_path.unlink(missing_ok=True)
+        atomic_write_json(
+            state_path,
+            {
+                **prelaunch_state,
+                "status": "prelaunch-failed-cleaned",
+                "failure_type": type(exc).__name__,
+                "service_remains_stopped": False,
+                "autoscaling_remains_suspended": False,
+            },
+        )
         raise
     except Exception as exc:
         if launch_attempted:
@@ -372,6 +412,7 @@ def _execute_command(args: argparse.Namespace) -> int:
                 region=context.region,
                 staging_bucket=context.staging_bucket,
                 migration_id=plan.migration_id,
+                expected_bucket_owner=context.account_id,
                 session=session,
             )
         if lock_acquired and context is not None:
@@ -380,7 +421,16 @@ def _execute_command(args: argparse.Namespace) -> int:
                 session=session,
                 migration_id=plan.migration_id,
             )
-        state_path.unlink(missing_ok=True)
+        atomic_write_json(
+            state_path,
+            {
+                **prelaunch_state,
+                "status": "prelaunch-failed-cleaned",
+                "failure_type": type(exc).__name__,
+                "service_remains_stopped": False,
+                "autoscaling_remains_suspended": False,
+            },
+        )
         raise
 
     assert context is not None and receipt is not None
@@ -392,8 +442,7 @@ def _execute_command(args: argparse.Namespace) -> int:
         maximum_attempts=args.maximum_wait_attempts,
     )
     status = read_remote_status(receipt, session=session)
-    worker_status = status.get("worker", {}).get("status")
-    if exit_code == 0 and worker_status == "succeeded":
+    if exit_code == 0 and _ready_to_restore_service(status):
         set_service_desired_count(
             context,
             session=session,
@@ -456,8 +505,10 @@ def _finalize_command(args: argparse.Namespace) -> int:
     )
     _context_matches_receipt(context, receipt)
     status = read_remote_status(receipt, session=session)
-    if not _completed_worker_success(status):
-        raise ToolError("The import worker did not report success; do not restart service")
+    if not _ready_to_restore_service(status):
+        raise ToolError(
+            "The import worker, stopped service, and suspended autoscaling state " "do not jointly authorize restart"
+        )
     set_service_desired_count(
         context,
         session=session,
@@ -557,6 +608,22 @@ def _completed_worker_success(status: dict[str, Any]) -> bool:
         and isinstance(task, dict)
         and task.get("last_status") == "STOPPED"
         and task.get("container_exit_code") == 0
+        and task.get("identity_verified") is True
+    )
+
+
+def _ready_to_restore_service(status: dict[str, Any]) -> bool:
+    service = status.get("service", {})
+    autoscaling = status.get("autoscaling", {})
+    return (
+        _completed_worker_success(status)
+        and isinstance(service, dict)
+        and service.get("desired_count") == 0
+        and service.get("running_count") == 0
+        and service.get("pending_count") == 0
+        and isinstance(autoscaling, dict)
+        and autoscaling.get("suspended") is True
+        and autoscaling.get("active") is False
     )
 
 

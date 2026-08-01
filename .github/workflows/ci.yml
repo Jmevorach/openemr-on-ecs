@@ -18,6 +18,8 @@ env:
   PYTHON_VERSION: "3.14"
   NODE_VERSION: "24"
   PIP_VERSION: "26.2"
+  SHELLCHECK_VERSION: "0.11.0"
+  SHELLCHECK_LINUX_X86_64_SHA256: "b7af85e41cc99489dcc21d66c6d5f3685138f06d34651e6d34b42ec6d54fe6f6"
 
 jobs:
   unit-tests:
@@ -249,8 +251,16 @@ jobs:
 
       - name: Install shellcheck
         run: |
-          sudo apt-get update
-          sudo apt-get install -y shellcheck
+          archive="/tmp/shellcheck.tar.gz"
+          curl --fail --silent --show-error --location \
+            "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.gz" \
+            --output "$archive"
+          echo "${SHELLCHECK_LINUX_X86_64_SHA256}  ${archive}" | sha256sum --check -
+          tar -xzf "$archive" -C /tmp
+          sudo install -m 0755 \
+            "/tmp/shellcheck-v${SHELLCHECK_VERSION}/shellcheck" \
+            /usr/local/bin/shellcheck
+          shellcheck --version
 
       - name: Run shellcheck on scripts
         run: |

@@ -97,6 +97,7 @@ node_modules/.bin/cdk destroy
 - [Prerequisites](#prerequisites)
 - [Quick Setup (~50 minutes)](#quick-setup-50-minutes)
 - [Directory Overview](#directory-overview)
+- [Repository Knowledge MCP](#repository-knowledge-mcp)
 - [Access OpenEMR](#access-openemr)
 - [Clean Up](#clean-up)
 - [Need Help?](#need-help)
@@ -344,6 +345,7 @@ Before starting, you'll need:
 ├── README-TESTING.md                        # Local testing guide
 ├── BACKUP-RESTORE-GUIDE.md                  # Backup and restore procedures
 ├── IMPORTING-OPENEMR.md                     # Guarded fresh-target import workflow
+├── KNOWLEDGE-MCP.md                          # Read-only repository MCP setup and safety
 ├── LIVE-E2E.md                               # Approval-gated real deployment test
 ├── MAINTAINERS.md                            # Audit, validation, MCP, and operations index
 ├── DETAILS.md                               # Deep configuration details
@@ -353,6 +355,23 @@ Before starting, you'll need:
 ├── CODE_OF_CONDUCT.md                       # Code of conduct
 └── LICENSE                                  # Project license
 ```
+
+## Repository Knowledge MCP
+
+Maintainers and contributors can connect an MCP-capable assistant to the
+repository's optional, local knowledge server:
+
+```bash
+.venv/bin/python -m tools.knowledge_mcp
+```
+
+It provides curated architecture and operational topics, bounded repository
+search and reads, a declared-version inventory, and a redacted configuration
+reference. The server uses local STDIO only and cannot write files, execute
+commands, contact AWS, or make network requests.
+
+See the [Repository Knowledge MCP Guide](KNOWLEDGE-MCP.md) for installation,
+Cursor configuration, available tools, safety boundaries, and validation.
 
 ## Access OpenEMR
 1. Use the URL provided in the deployment output
@@ -551,6 +570,7 @@ safety boundaries for AWS-aware tools.
 
 ### Core Documentation
 - [Architecture Documentation](ARCHITECTURE.md) - Detailed architecture overview, component relationships, network design, security architecture, and design decisions
+- [Repository Knowledge MCP Guide](KNOWLEDGE-MCP.md) - Connect an MCP-capable assistant to bounded, read-only project knowledge
 - [Troubleshooting Guide](TROUBLESHOOTING.md) - Common issues and solutions including database connection problems, container health checks, SSL/TLS issues, and deployment failures
 - [Detailed Configuration Guide](DETAILS.md) - Complete configuration options and advanced features for customizing your deployment
 - [Local Testing Guide](README-TESTING.md) - Test the container startup locally using Docker Compose before deploying to AWS

@@ -6,7 +6,7 @@ import re
 import stat
 import tarfile
 import zipfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 from typing import IO, Callable, TypedDict
 
@@ -32,6 +32,7 @@ _IMPORTED_TOP_LEVEL_FILES = {
     "faxtitle.eps",
     "referral_template.html",
 }
+_REQUIRED_DRIVE_KEY_FILES = {"sevena", "sevenb"}
 _VERSION_FIELD = re.compile(rb"\$(v_major|v_minor|v_patch|v_tag|v_realpatch)\s*=\s*['\"]([^'\"]*)['\"]")
 
 
@@ -55,8 +56,7 @@ class _MutableSite:
     has_sqlconf: bool = False
     has_documents: bool = False
     document_count: int = 0
-    has_sixa: bool = False
-    has_sixb: bool = False
+    drive_key_files: set[str] = field(default_factory=set)
     certificate_count: int = 0
     edi_file_count: int = 0
     executable_file_count: int = 0
@@ -145,10 +145,13 @@ def _record_member(
                 site.certificate_count += 1
             if any(part in {"edi", "era", "edihistory"} for part in lowered):
                 site.edi_file_count += 1
-            if lowered == ("documents", "logs_and_misc", "methods", "sixa") and size > 0:
-                site.has_sixa = True
-            if lowered == ("documents", "logs_and_misc", "methods", "sixb") and size > 0:
-                site.has_sixb = True
+            if (
+                lowered[:3] == ("documents", "logs_and_misc", "methods")
+                and len(lowered) == 4
+                and lowered[3] in _REQUIRED_DRIVE_KEY_FILES
+                and size > 0
+            ):
+                site.drive_key_files.add(lowered[3])
 
     import_candidate = bool(
         relative
@@ -177,7 +180,7 @@ def _finalize(
             has_sqlconf=site.has_sqlconf,
             has_documents=site.has_documents,
             document_count=site.document_count,
-            has_encryption_keys=site.has_sixa and site.has_sixb,
+            has_encryption_keys=_REQUIRED_DRIVE_KEY_FILES.issubset(site.drive_key_files),
             certificate_count=site.certificate_count,
             edi_file_count=site.edi_file_count,
             executable_file_count=site.executable_file_count,
@@ -194,7 +197,7 @@ def _finalize(
         if not site.has_documents:
             unsupported.append(f"Site {site.site_id!r} is missing its documents directory")
         if not site.has_encryption_keys:
-            manual_review.append(f"Site {site.site_id!r} does not contain both sixa and sixb encryption keys")
+            manual_review.append(f"Site {site.site_id!r} does not contain both sevena and sevenb encryption keys")
         if site.executable_file_count:
             manual_review.append(f"Site {site.site_id!r} contains executable or script-like files")
     if facts["custom_code_detected"]:

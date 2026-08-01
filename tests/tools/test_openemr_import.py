@@ -21,6 +21,23 @@ from tools.openemr_import.models import ArchiveLimits
 from tools.openemr_import.plan import create_plan, plan_from_dict
 
 
+def test_service_restore_requires_worker_task_and_quiescence_state() -> None:
+    status = {
+        "worker": {"status": "succeeded"},
+        "task": {
+            "last_status": "STOPPED",
+            "container_exit_code": 0,
+            "identity_verified": True,
+        },
+        "service": {"desired_count": 0, "running_count": 0, "pending_count": 0},
+        "autoscaling": {"suspended": True, "active": False},
+    }
+
+    assert cli._ready_to_restore_service(status)
+    status["service"]["desired_count"] = 1
+    assert not cli._ready_to_restore_service(status)
+
+
 def _add_bytes(
     archive: tarfile.TarFile,
     name: str,
@@ -80,12 +97,12 @@ def _sites_archive(
         if include_keys:
             _add_bytes(
                 archive,
-                "sites/default/documents/logs_and_misc/methods/sixa",
+                "sites/default/documents/logs_and_misc/methods/sevena",
                 b"key-a",
             )
             _add_bytes(
                 archive,
-                "sites/default/documents/logs_and_misc/methods/sixb",
+                "sites/default/documents/logs_and_misc/methods/sevenb",
                 b"key-b",
             )
         if executable_document:
@@ -99,12 +116,12 @@ def _sites_archive(
             _add_bytes(archive, "sites/other/documents/file.pdf", b"other")
             _add_bytes(
                 archive,
-                "sites/other/documents/logs_and_misc/methods/sixa",
+                "sites/other/documents/logs_and_misc/methods/sevena",
                 b"a",
             )
             _add_bytes(
                 archive,
-                "sites/other/documents/logs_and_misc/methods/sixb",
+                "sites/other/documents/logs_and_misc/methods/sevenb",
                 b"b",
             )
     return output.getvalue()
@@ -343,6 +360,8 @@ def test_ambiguous_task_launch_preserves_stopped_service_and_staging(
 
     monkeypatch.setattr(cli, "_boto3_session", lambda **kwargs: object())
     monkeypatch.setattr("tools.openemr_import.aws.resolve_stack_context", lambda **kwargs: context)
+    monkeypatch.setattr("tools.openemr_import.aws.assert_import_resource_bindings", lambda *args, **kwargs: None)
+    monkeypatch.setattr("tools.openemr_import.aws.assert_new_import_target", lambda *args, **kwargs: None)
     monkeypatch.setattr("tools.openemr_import.aws.assert_service_stable", lambda *args, **kwargs: 1)
     monkeypatch.setattr("tools.openemr_import.aws.assert_service_autoscaling_active", lambda *args, **kwargs: None)
     monkeypatch.setattr(

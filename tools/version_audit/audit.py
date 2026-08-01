@@ -56,6 +56,8 @@ def _classify(
         "github-actions",
         "pre-commit",
     } and not declaration.metadata.get("immutable_sha_pins", False)
+    if action_is_mutably_pinned:
+        return Status.MANUAL_REVIEW, "GitHub dependency is not pinned to an immutable commit SHA"
 
     if declaration.source_kind == "pypi" and declaration.constraint and " / " not in declaration.constraint:
         try:
@@ -68,7 +70,12 @@ def _classify(
         except InvalidSpecifier, InvalidVersion:
             return Status.MANUAL_REVIEW, "The declared Python constraint could not be compared safely"
 
-    if _compatible_alias(current, latest):
+    tracks_release_line = declaration.source_kind in {
+        "go-toolchain",
+        "node-toolchain",
+        "python-toolchain",
+    }
+    if tracks_release_line and _compatible_alias(current, latest):
         if action_is_mutably_pinned:
             return Status.MANUAL_REVIEW, "GitHub dependency is not pinned to an immutable commit SHA"
         return Status.CURRENT, "The major/minor declaration already tracks this stable release line"

@@ -174,12 +174,19 @@ class StorageComponents:
             server_access_logs_prefix="import-staging-access/",
             lifecycle_rules=[
                 s3.LifecycleRule(
-                    id="ExpireImportStaging",
+                    id="ExpireImportEvidence",
                     enabled=True,
                     prefix="migrations/",
+                    expiration=Duration.days(30),
+                    noncurrent_version_expiration=Duration.days(30),
+                    abort_incomplete_multipart_upload_after=Duration.days(1),
+                ),
+                s3.LifecycleRule(
+                    id="ExpireImportSource",
+                    enabled=True,
+                    tag_filters={"DataClass": "ImportSource"},
                     expiration=Duration.days(1),
                     noncurrent_version_expiration=Duration.days(1),
-                    abort_incomplete_multipart_upload_after=Duration.days(1),
                 ),
                 s3.LifecycleRule(
                     id="CleanImportLockHistory",
@@ -189,6 +196,34 @@ class StorageComponents:
                     expired_object_delete_marker=True,
                 ),
             ],
+        )
+        self.import_staging_bucket.add_to_resource_policy(
+            iam.PolicyStatement(
+                sid="DenyImportObjectsWithoutExplicitKmsEncryption",
+                effect=iam.Effect.DENY,
+                principals=[iam.AnyPrincipal()],
+                actions=["s3:PutObject"],
+                resources=[self.import_staging_bucket.arn_for_objects("*")],
+                conditions={
+                    "StringNotEquals": {
+                        "s3:x-amz-server-side-encryption": "aws:kms",
+                    }
+                },
+            )
+        )
+        self.import_staging_bucket.add_to_resource_policy(
+            iam.PolicyStatement(
+                sid="DenyImportObjectsEncryptedWithAnotherKey",
+                effect=iam.Effect.DENY,
+                principals=[iam.AnyPrincipal()],
+                actions=["s3:PutObject"],
+                resources=[self.import_staging_bucket.arn_for_objects("*")],
+                conditions={
+                    "StringNotEquals": {
+                        "s3:x-amz-server-side-encryption-aws-kms-key-id": encryption_key.key_arn,
+                    }
+                },
+            )
         )
         acknowledge_findings(
             self.import_staging_bucket,

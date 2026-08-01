@@ -68,10 +68,20 @@ _DENIED_FILE_PATTERNS = (
 )
 _ACCOUNT_ID_RE = re.compile(r"(?<!\d)\d{12}(?!\d)")
 _AWS_ACCESS_KEY_RE = re.compile(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b")
-_AUTHORITY_CREDENTIAL_RE = re.compile(r"(?i)([a-z][a-z0-9+.-]*://[^:/@\s]+:)[^@\s]+(@)")
+_URL_USERINFO_RE = re.compile(
+    r"(?i)(\b[a-z][a-z0-9+.-]*://)[^/\s:@]+(?::[^/@\s]*)?@",
+)
+_URL_QUERY_SECRET_RE = re.compile(
+    r"(?i)([?&](?:password|passwd|secret|token|api[_-]?key|access[_-]?key|"
+    r"private[_-]?key|client[_-]?secret|credential|authorization)=)[^&#\s]+",
+)
+_SECRET_KEY = (
+    r"[a-z0-9_.-]*(?:password|passwd|secret|token|api[_-]?key|access[_-]?key|"
+    r"private[_-]?key|client[_-]?secret|credential|authorization)[a-z0-9_.-]*"
+)
 _SECRET_ASSIGNMENT_RE = re.compile(
-    r"""(?im)^(\s*["']?[a-z0-9_.-]*(?:password|passwd|secret|token|access[_-]?key|private[_-]?key)"""
-    r"""[a-z0-9_.-]*["']?\s*[:=]\s*).+$"""
+    rf"""(?im)(^|[{{,]\s*)(["']?{_SECRET_KEY}["']?\s*[:=]\s*)"""
+    r"""(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^,}\]\r\n]+)"""
 )
 
 
@@ -133,12 +143,13 @@ def hash_account_id(account_id: str) -> str:
 
 
 def redact_text(value: str) -> str:
-    """Redact common secret assignments and 12-digit account identifiers."""
+    """Redact common credentials, secret assignments, and account identifiers."""
 
     value = _ACCOUNT_ID_RE.sub("<account-id>", value)
     value = _AWS_ACCESS_KEY_RE.sub("<aws-access-key>", value)
-    value = _AUTHORITY_CREDENTIAL_RE.sub(r"\1<redacted>\2", value)
-    return _SECRET_ASSIGNMENT_RE.sub(r"\1<redacted>", value)
+    value = _URL_USERINFO_RE.sub(r"\1<redacted>@", value)
+    value = _URL_QUERY_SECRET_RE.sub(r"\1<redacted>", value)
+    return _SECRET_ASSIGNMENT_RE.sub(r'\1\2"<redacted>"', value)
 
 
 def is_secret_like_path(path: Path) -> bool:

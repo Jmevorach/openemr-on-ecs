@@ -30,9 +30,10 @@ through the audited upgrade workflow rather than relying on floating CI ranges.
 
 Commands fall into four classes:
 
-1. **Offline/read-only:** tests, formatting checks, static analysis, version
+1. **Offline/local-only:** tests, formatting checks, static analysis, version
    inventory, knowledge MCP, import inspection/planning, and timing-report
-   regeneration.
+   regeneration. Commands that accept an output path or regenerate a report
+   write only those documented local artifacts.
 2. **Public network/read-only:** the online version audit.
 3. **AWS/read-only:** import status and live E2E preflight. E2E preflight also
    performs local synthesis and template diffing but does not deploy.
@@ -45,7 +46,8 @@ execution.
 
 ## Version audit
 
-Inventory every declaration without network access:
+Inventory supported dependency, platform, container, action, and toolchain
+declarations without network access:
 
 ```bash
 .venv/bin/python -m tools.version_audit --offline
@@ -96,15 +98,20 @@ Run the primary Python suite:
 Run formatting, linting, typing, and static security checks:
 
 ```bash
-.venv/bin/black --check openemr_ecs tests diagrams tools
-.venv/bin/flake8 openemr_ecs tests diagrams tools \
+.venv/bin/black --check app.py openemr_ecs tests diagrams tools \
+  scripts/test-cdk-synthesis.py
+.venv/bin/flake8 app.py openemr_ecs tests diagrams tools \
+  scripts/test-cdk-synthesis.py \
   --max-line-length=120 --extend-ignore=E203,W503,E501
-.venv/bin/isort --check-only openemr_ecs tests diagrams tools
-.venv/bin/mypy openemr_ecs diagrams tools/_shared.py \
+.venv/bin/isort --check-only app.py openemr_ecs tests diagrams tools \
+  scripts/test-cdk-synthesis.py
+.venv/bin/mypy app.py openemr_ecs diagrams tools/_shared.py \
   tools/version_audit tools/knowledge_mcp tools/openemr_import tools/live_e2e \
   tools/openemr-import-worker/worker.py tools/credential-rotation/src \
+  scripts/test-cdk-synthesis.py \
   --ignore-missing-imports
-.venv/bin/bandit -r openemr_ecs diagrams tools -ll
+.venv/bin/bandit -r app.py openemr_ecs diagrams tools \
+  scripts/test-cdk-synthesis.py -ll
 .venv/bin/pip-audit --strict --progress-spinner off \
   -r requirements.txt -r requirements-dev.txt \
   -r tools/credential-rotation/requirements.txt \
@@ -146,6 +153,9 @@ configuration combinations and remain synthesis-only. The CI workflow is the
 authoritative list of all checks, including Compose and CloudFormation lint.
 
 ## Read-only knowledge MCP
+
+Use [KNOWLEDGE-MCP.md](KNOWLEDGE-MCP.md) for client configuration, the complete
+tool and resource inventory, safety boundaries, examples, and troubleshooting.
 
 Start the local STDIO server:
 
@@ -225,4 +235,3 @@ Before release, verify the fork and push target, run normal validation, and use
 `.github/workflows/manual-release.yml`. Monitor ordinary GitHub Actions checks
 until green or until a confirmed external service, permission, or quota blocks
 progress.
-

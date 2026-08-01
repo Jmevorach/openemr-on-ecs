@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Sequence
 
 import boto3
 import requests
@@ -28,7 +29,8 @@ _EXPECTED_RESOURCE_TYPES = {
     "AWS::WAFv2::WebACLAssociation",
 }
 _FATAL_LOG_PATTERN = re.compile(
-    r"(?i)\b(?:segmentation fault|out of memory|uncaught (?:exception|error)|" r"fatal php error|kernel panic|panic:)\b"
+    r"(?i)\b(?:segmentation fault|out of memory|uncaught (?:exception|error)|"
+    r"(?:fatal php|php fatal) error|kernel panic|panic:)\b"
 )
 _QUOTAS = (
     ("vpc-count", "vpc", "L-F678F1CE", 1.0),
@@ -251,12 +253,14 @@ class LiveE2EAws:
         *,
         stack_name_or_id: str,
         run_id: str,
+        profile: str,
         https_timeout_seconds: float,
         poll_seconds: float,
     ) -> tuple[tuple[CheckResult, ...], tuple[PhaseTiming, ...]]:
         """Validate infrastructure, task health, startup logs, WAF, and HTTPS."""
 
         validation_started = time.monotonic()
+        readiness_deadline = validation_started + https_timeout_seconds
         phases: list[PhaseTiming] = []
         stack = self.assert_owned_stack(stack_name_or_id, run_id)
         stack_status = str(stack.get("StackStatus", ""))
@@ -279,13 +283,54 @@ class LiveE2EAws:
             raise ToolError(f"Stack contains failed resources: {', '.join(failed)}")
         checks.append(CheckResult("expected-resources", "pass", f"{len(resources)} stack resources healthy"))
 
+        application_url = _required_output(outputs, "ApplicationURL")
+        if not application_url.startswith("https://"):
+            raise ToolError("ApplicationURL is not HTTPS")
+        readiness_duration, request_duration = self._wait_for_https(
+            application_url,
+            timeout_seconds=max(0.1, readiness_deadline - time.monotonic()),
+            poll_seconds=poll_seconds,
+        )
+        ready_at = datetime.now(timezone.utc)
+        application_ready_duration = round(
+            max(0.0, (ready_at - _aware(stack["CreationTime"])).total_seconds()),
+            3,
+        )
+        checks.append(CheckResult("application-https", "pass", "HTTPS returned an OpenEMR response"))
+        phases.extend(
+            (
+                PhaseTiming(
+                    "post-deploy-https-wait",
+                    readiness_duration,
+                    "local-monotonic-clock-with-https-probes",
+                ),
+                PhaseTiming(
+                    "http-readiness",
+                    request_duration,
+                    "http-client-monotonic-clock",
+                ),
+                PhaseTiming(
+                    "application-https-ready",
+                    application_ready_duration,
+                    "cloudformation-stack-creation-and-local-https-probe",
+                    _timestamp(_aware(stack["CreationTime"])),
+                    _timestamp(ready_at),
+                ),
+            )
+        )
+
         cluster = _required_output(outputs, "ECSClusterName")
         service = _required_output(outputs, "ECSServiceName")
         ecs_started = time.monotonic()
+        waiter_delay = max(5, int(poll_seconds))
+        waiter_attempts = max(
+            1,
+            math.ceil(max(0.1, readiness_deadline - time.monotonic()) / waiter_delay),
+        )
         self.client("ecs").get_waiter("services_stable").wait(
             cluster=cluster,
             services=[service],
-            WaiterConfig={"Delay": max(5, int(poll_seconds)), "MaxAttempts": 120},
+            WaiterConfig={"Delay": waiter_delay, "MaxAttempts": waiter_attempts},
         )
         service_data = self.client("ecs").describe_services(cluster=cluster, services=[service])["services"][0]
         if int(service_data.get("runningCount", 0)) < int(service_data.get("desiredCount", 0)):
@@ -379,6 +424,8 @@ class LiveE2EAws:
         database = self.client("rds").describe_db_clusters(DBClusterIdentifier=database_id)["DBClusters"][0]
         if database.get("Status") != "available":
             raise ToolError(f"Aurora cluster is not available: {database.get('Status')}")
+        if profile == "api-enabled" and database.get("HttpEndpointEnabled") is not True:
+            raise ToolError("API-enabled profile did not enable the Aurora Data API")
         checks.append(CheckResult("aurora-cluster", "pass", "cluster available"))
         phases.append(_local_phase("aurora-availability-validation", database_started))
 
@@ -459,41 +506,46 @@ class LiveE2EAws:
         )
         phases.append(_local_phase("startup-log-validation", log_started))
 
-        application_url = _required_output(outputs, "ApplicationURL")
-        if not application_url.startswith("https://"):
-            raise ToolError("ApplicationURL is not HTTPS")
-        readiness_duration, request_duration = self._wait_for_https(
-            application_url,
-            timeout_seconds=https_timeout_seconds,
-            poll_seconds=poll_seconds,
-        )
-        ready_at = datetime.now(timezone.utc)
-        application_ready_duration = round(
-            max(0.0, (ready_at - creation_time).total_seconds()),
-            3,
-        )
-        checks.append(CheckResult("application-https", "pass", "HTTPS returned an OpenEMR response"))
-        phases.extend(
-            (
-                PhaseTiming(
-                    "post-deploy-https-wait",
-                    readiness_duration,
-                    "local-monotonic-clock-with-https-probes",
-                ),
-                PhaseTiming(
-                    "http-readiness",
-                    request_duration,
-                    "http-client-monotonic-clock",
-                ),
-                PhaseTiming(
-                    "application-https-ready",
-                    application_ready_duration,
-                    "cloudformation-stack-creation-and-local-https-probe",
-                    _timestamp(creation_time),
-                    _timestamp(ready_at),
-                ),
+        if profile == "api-enabled":
+            task_definition = (
+                self.client("ecs")
+                .describe_task_definition(
+                    taskDefinition=str(service_data.get("taskDefinition", "")),
+                )
+                .get("taskDefinition", {})
             )
-        )
+            definitions = task_definition.get("containerDefinitions", [])
+            openemr_container = next(
+                (item for item in definitions if item.get("name") == "openemr"),
+                None,
+            )
+            secret_names = {
+                str(item.get("name")) for item in (openemr_container or {}).get("secrets", []) if item.get("name")
+            }
+            expected_settings = {
+                "OPENEMR_SETTING_portal_onsite_two_enable",
+                "OPENEMR_SETTING_rest_api",
+                "OPENEMR_SETTING_rest_fhir_api",
+            }
+            if not expected_settings.issubset(secret_names):
+                raise ToolError("API-enabled task definition is missing required OpenEMR settings")
+            try:
+                portal = requests.get(
+                    application_url.rstrip("/") + "/portal/",
+                    timeout=30,
+                    allow_redirects=True,
+                )
+            except requests.RequestException as exc:
+                raise ToolError(f"Patient portal smoke request failed: {type(exc).__name__}") from exc
+            if portal.status_code >= 400 or "openemr" not in portal.text[:200_000].lower():
+                raise ToolError("API-enabled patient portal smoke test failed")
+            checks.append(
+                CheckResult(
+                    "api-enabled-profile",
+                    "pass",
+                    "Data API, REST/FHIR settings, and patient portal verified",
+                )
+            )
 
         smoke_started = time.monotonic()
         smoke_url = application_url.rstrip("/") + "/interface/login/login.php"
@@ -518,7 +570,10 @@ class LiveE2EAws:
         if operation == "CREATE":
             definitions = (
                 ("cloudformation-deployment", {"AWS::CloudFormation::Stack"}),
-                ("aurora-provisioning", {"AWS::RDS::DBCluster"}),
+                (
+                    "aurora-provisioning",
+                    {"AWS::RDS::DBCluster", "AWS::RDS::DBInstance"},
+                ),
                 (
                     "elasticache-provisioning",
                     {"AWS::ElastiCache::ServerlessCache"},
@@ -635,23 +690,76 @@ class LiveE2EAws:
             self._image_asset_residuals(manifest.get("dockerImages", {}), residuals)
         return tuple(residuals[key] for key in sorted(residuals))
 
-    def cleanup_owned_log_groups(self, stack_name: str, run_id: str) -> int:
-        """Delete Lambda log groups with the exact unique E2E stack prefix."""
+    def owned_rds_cluster_identifiers(
+        self,
+        stack_name_or_id: str,
+        run_id: str,
+    ) -> tuple[str, ...]:
+        """Capture RDS cluster IDs from the exact owned stack before deletion."""
+
+        owned = self.assert_owned_stack(stack_name_or_id, run_id)
+        stack_id = str(owned["StackId"])
+        cloudformation = self.client("cloudformation")
+        identifiers: set[str] = set()
+        token: str | None = None
+        while True:
+            arguments: dict[str, Any] = {"StackName": stack_id}
+            if token:
+                arguments["NextToken"] = token
+            response = cloudformation.list_stack_resources(**arguments)
+            for resource in response.get("StackResourceSummaries", []):
+                if resource.get("ResourceType") != "AWS::RDS::DBCluster":
+                    continue
+                identifier = str(resource.get("PhysicalResourceId", ""))
+                if not identifier:
+                    continue
+                if not re.fullmatch(r"[A-Za-z][A-Za-z0-9-]{0,62}", identifier):
+                    raise ToolError("Owned stack returned an invalid RDS cluster identifier")
+                identifiers.add(identifier)
+            token = response.get("NextToken")
+            if not token:
+                break
+        if str(owned.get("StackStatus", "")) in {"CREATE_COMPLETE", "UPDATE_COMPLETE"} and not identifiers:
+            raise ToolError("Owned E2E stack has no RDS cluster to inventory")
+        return tuple(sorted(identifiers))
+
+    def cleanup_owned_log_groups(
+        self,
+        stack_name: str,
+        run_id: str,
+        rds_cluster_identifiers: Sequence[str] = (),
+    ) -> int:
+        """Delete Lambda and RDS log groups derived from the exact owned stack."""
 
         run_hash = hashlib.sha256(run_id.encode("utf-8")).hexdigest()[:12]
         expected_stack_name = f"OpenemrE2E-{run_hash}"
         if stack_name != expected_stack_name:
             raise ToolError("Refusing log cleanup for a stack name outside the live E2E scope")
-        prefix = f"/aws/lambda/{expected_stack_name}-"
+        prefixes = [f"/aws/lambda/{expected_stack_name}-"]
+        for identifier in rds_cluster_identifiers:
+            if not re.fullmatch(r"[A-Za-z][A-Za-z0-9-]{0,62}", identifier):
+                raise ToolError("Refusing log cleanup for an invalid RDS identifier")
+            prefixes.append(f"/aws/rds/cluster/{identifier}/")
         paginator = self.client("logs").get_paginator("describe_log_groups")
         names: list[str] = []
-        for page in paginator.paginate(logGroupNamePrefix=prefix):
-            for item in page.get("logGroups", []):
-                name = item.get("logGroupName")
-                if isinstance(name, str) and name.startswith(prefix):
-                    names.append(name)
+        for prefix in prefixes:
+            for page in paginator.paginate(logGroupNamePrefix=prefix):
+                for item in page.get("logGroups", []):
+                    name = item.get("logGroupName")
+                    if isinstance(name, str) and name.startswith(prefix):
+                        names.append(name)
         for name in sorted(set(names)):
             self.client("logs").delete_log_group(logGroupName=name)
+        remaining: list[str] = []
+        for prefix in prefixes:
+            for page in paginator.paginate(logGroupNamePrefix=prefix):
+                remaining.extend(
+                    str(item["logGroupName"])
+                    for item in page.get("logGroups", [])
+                    if str(item.get("logGroupName", "")).startswith(prefix)
+                )
+        if remaining:
+            raise ToolError("Owned CloudWatch log groups remain after explicit cleanup")
         return len(set(names))
 
     def _file_asset_residuals(
@@ -757,28 +865,39 @@ class LiveE2EAws:
     def _hosted_zone(self, domain: str) -> dict[str, Any]:
         response = self.client("route53", global_service=True).list_hosted_zones_by_name(
             DNSName=domain.rstrip("."),
-            MaxItems="1",
+            MaxItems="2",
         )
         zones = response.get("HostedZones", [])
-        if not zones or str(zones[0].get("Name", "")).rstrip(".").lower() != domain.rstrip(".").lower():
+        normalized = domain.rstrip(".").lower()
+        matches = [zone for zone in zones if str(zone.get("Name", "")).rstrip(".").lower() == normalized]
+        if not matches:
             raise ToolError(f"No exact Route 53 hosted zone found for {domain}")
-        return dict(zones[0])
+        if len(matches) != 1:
+            raise ToolError(f"Multiple exact Route 53 hosted zones found for {domain}")
+        return dict(matches[0])
 
     def _assert_dedicated_zone_records(self, zone: dict[str, Any]) -> None:
         zone_id = zone.get("Id")
         if not isinstance(zone_id, str) or not zone_id:
             raise ToolError("Route 53 hosted zone has no valid identifier")
+        apex = str(zone.get("Name", "")).rstrip(".").lower()
+        if not apex:
+            raise ToolError("Route 53 hosted zone has no valid name")
         paginator = self.client("route53", global_service=True).get_paginator("list_resource_record_sets")
-        non_delegation_types: set[str] = set()
+        delegation_records: list[str] = []
+        unexpected_records: set[str] = set()
         for page in paginator.paginate(HostedZoneId=zone_id):
             for record in page.get("ResourceRecordSets", []):
                 record_type = str(record.get("Type", ""))
-                if record_type not in {"NS", "SOA"}:
-                    non_delegation_types.add(record_type or "unknown")
-        if non_delegation_types:
+                record_name = str(record.get("Name", "")).rstrip(".").lower()
+                if record_name == apex and record_type in {"NS", "SOA"}:
+                    delegation_records.append(record_type)
+                else:
+                    unexpected_records.add(f"{record_name or 'unknown'}:{record_type or 'unknown'}")
+        if unexpected_records or sorted(delegation_records) != ["NS", "SOA"]:
             raise ToolError(
-                "Dedicated live E2E hosted zone contains existing non-delegation "
-                f"records ({', '.join(sorted(non_delegation_types))}); use an empty zone"
+                "Dedicated live E2E hosted zone must contain exactly its apex NS and SOA records"
+                + (f"; unexpected records: {', '.join(sorted(unexpected_records))}" if unexpected_records else "")
             )
 
     def _permission_probes(self) -> list[CheckResult]:
@@ -808,6 +927,8 @@ class LiveE2EAws:
         account_id: str,
         bootstrap: dict[str, Any],
     ) -> tuple[CheckResult, ...]:
+        if caller_arn.endswith(":root"):
+            raise ToolError("Live E2E requires an IAM role or user; root credentials are not supported")
         parameters = {
             str(item.get("ParameterKey")): str(item.get("ParameterValue")) for item in bootstrap.get("Parameters", [])
         }
@@ -839,15 +960,14 @@ class LiveE2EAws:
             label="CDK CloudFormation execution role",
         )
 
-        if not caller_arn.endswith(":root"):
-            caller_principal = _iam_principal_arn(caller_arn)
-            log_group_arn = f"arn:{partition}:logs:{self.region}:{account_id}:" "log-group:/aws/lambda/OpenemrE2E-*"
-            self._simulate_actions(
-                principal_arn=caller_principal,
-                actions=("logs:DeleteLogGroup",),
-                label="local cleanup principal",
-                resource_arns=(log_group_arn,),
-            )
+        caller_principal = _iam_principal_arn(caller_arn)
+        log_group_arn = f"arn:{partition}:logs:{self.region}:{account_id}:" "log-group:/aws/lambda/OpenemrE2E-*"
+        self._simulate_actions(
+            principal_arn=caller_principal,
+            actions=("logs:DeleteLogGroup",),
+            label="local cleanup principal",
+            resource_arns=(log_group_arn,),
+        )
 
         return (
             CheckResult(
@@ -1011,8 +1131,14 @@ class LiveE2EAws:
         deadline = started + timeout_seconds
         last_error = "no response"
         while time.monotonic() < deadline:
+            remaining = deadline - time.monotonic()
             try:
-                response = requests.get(url, timeout=30, allow_redirects=True)
+                # Timeout is dynamically capped at 30 seconds by the shared deadline.
+                response = requests.get(  # nosec B113
+                    url,
+                    timeout=max(0.1, min(30.0, remaining)),
+                    allow_redirects=True,
+                )
                 body = response.text[:200_000].lower()
                 if response.status_code == 200 and "openemr" in body:
                     return (
@@ -1022,7 +1148,9 @@ class LiveE2EAws:
                 last_error = f"HTTP {response.status_code}"
             except requests.RequestException as exc:
                 last_error = type(exc).__name__
-            time.sleep(poll_seconds)
+            remaining = deadline - time.monotonic()
+            if remaining > 0:
+                time.sleep(min(poll_seconds, remaining))
         raise ToolError(f"OpenEMR HTTPS readiness timed out: {last_error}")
 
 

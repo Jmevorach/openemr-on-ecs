@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -16,6 +17,8 @@ from tools.openemr_import.aws import (
     StackContext,
     acquire_import_lock,
     assert_application_healthy,
+    assert_import_resource_bindings,
+    assert_new_import_target,
     assert_service_autoscaling_active,
     assert_service_stable,
     cleanup_staging_scope,
@@ -41,6 +44,14 @@ class _Session:
         return self.clients[service]
 
 
+class _Responses:
+    def __init__(self, **responses: dict[str, Any]) -> None:
+        self.responses = responses
+
+    def __getattr__(self, name: str) -> Any:
+        return lambda **_: self.responses[name]
+
+
 class _Sts:
     def __init__(self, account: str = "123456789012") -> None:
         self.account = account
@@ -58,7 +69,8 @@ class _CloudFormation:
             "Stacks": [
                 {
                     "StackId": ("arn:aws:cloudformation:us-east-1:123456789012:" f"stack/{StackName}/identifier"),
-                    "StackStatus": "UPDATE_COMPLETE",
+                    "StackStatus": "CREATE_COMPLETE",
+                    "CreationTime": datetime(2026, 7, 31, tzinfo=UTC),
                     "Outputs": [{"OutputKey": key, "OutputValue": value} for key, value in self.outputs.items()],
                 }
             ]
@@ -183,6 +195,8 @@ def _context() -> StackContext:
         account_id="123456789012",
         region="us-east-1",
         stack_name="OpenEMR",
+        stack_creation_time="2026-07-31T00:00:00+00:00",
+        stack_last_updated_time=None,
         cluster_name="openemr",
         service_name="web",
         service_url="https://openemr.example.test",
@@ -222,6 +236,151 @@ def _plan() -> ImportPlan:
         warnings=(),
         configuration_fingerprint="d" * 32,
     )
+
+
+def test_fresh_import_target_must_be_new_and_never_updated() -> None:
+    context = _context()
+    assert_new_import_target(
+        context,
+        now=datetime(2026, 7, 31, 1, tzinfo=UTC),
+    )
+
+    with pytest.raises(AwsImportError, match="must not have any stack updates"):
+        assert_new_import_target(
+            replace(
+                context,
+                stack_last_updated_time="2026-07-31T00:30:00+00:00",
+            ),
+            now=datetime(2026, 7, 31, 1, tzinfo=UTC),
+        )
+    with pytest.raises(AwsImportError, match="less than 24 hours"):
+        assert_new_import_target(
+            context,
+            now=datetime(2026, 8, 2, tzinfo=UTC),
+        )
+
+
+def test_import_outputs_are_bound_to_private_encrypted_resources() -> None:
+    context = _context()
+    session = _Session(
+        {
+            "s3": _Responses(
+                head_bucket={},
+                get_bucket_encryption={
+                    "ServerSideEncryptionConfiguration": {
+                        "Rules": [
+                            {
+                                "ApplyServerSideEncryptionByDefault": {
+                                    "SSEAlgorithm": "aws:kms",
+                                    "KMSMasterKeyID": context.staging_kms_key_arn,
+                                }
+                            }
+                        ]
+                    }
+                },
+            ),
+            "kms": _Responses(
+                describe_key={
+                    "KeyMetadata": {
+                        "Arn": context.staging_kms_key_arn,
+                        "Enabled": True,
+                        "KeyManager": "CUSTOMER",
+                        "KeyUsage": "ENCRYPT_DECRYPT",
+                    }
+                }
+            ),
+            "rds": _Responses(
+                describe_db_clusters={
+                    "DBClusters": [
+                        {
+                            "DBClusterArn": context.database_arn,
+                            "Status": "available",
+                        }
+                    ]
+                }
+            ),
+            "efs": _Responses(
+                describe_file_systems={
+                    "FileSystems": [
+                        {
+                            "FileSystemArn": context.efs_arn,
+                            "Encrypted": True,
+                            "LifeCycleState": "available",
+                        }
+                    ]
+                }
+            ),
+            "ec2": _Responses(
+                describe_subnets={
+                    "Subnets": [
+                        {
+                            "SubnetId": subnet_id,
+                            "VpcId": "vpc-012345",
+                            "MapPublicIpOnLaunch": False,
+                        }
+                        for subnet_id in context.private_subnet_ids
+                    ]
+                },
+                describe_security_groups={
+                    "SecurityGroups": [
+                        {
+                            "GroupId": context.task_security_group_id,
+                            "VpcId": "vpc-012345",
+                            "IpPermissions": [],
+                        }
+                    ]
+                },
+            ),
+            "ecs": _Responses(
+                describe_task_definition={
+                    "taskDefinition": {
+                        "taskDefinitionArn": context.task_definition_arn,
+                        "networkMode": "awsvpc",
+                        "requiresCompatibilities": ["FARGATE"],
+                        "runtimePlatform": {"cpuArchitecture": "ARM64"},
+                        "containerDefinitions": [
+                            {
+                                "name": "openemr-import",
+                                "environment": [
+                                    {
+                                        "name": "IMPORT_STAGING_BUCKET_OWNER",
+                                        "value": context.account_id,
+                                    },
+                                    {
+                                        "name": "IMPORT_STAGING_KMS_KEY_ARN",
+                                        "value": context.staging_kms_key_arn,
+                                    },
+                                ],
+                            }
+                        ],
+                        "volumes": [
+                            {
+                                "efsVolumeConfiguration": {
+                                    "fileSystemId": context.efs_arn.rsplit("/", 1)[-1],
+                                    "transitEncryption": "ENABLED",
+                                }
+                            }
+                        ],
+                    }
+                }
+            ),
+        }
+    )
+
+    assert_import_resource_bindings(context, session=session)
+
+    session.clients["kms"] = _Responses(
+        describe_key={
+            "KeyMetadata": {
+                "Arn": context.staging_kms_key_arn,
+                "Enabled": False,
+                "KeyManager": "CUSTOMER",
+                "KeyUsage": "ENCRYPT_DECRYPT",
+            }
+        }
+    )
+    with pytest.raises(AwsImportError, match="not enabled"):
+        assert_import_resource_bindings(context, session=session)
 
 
 def test_stack_resolution_binds_account_region_and_required_outputs() -> None:
@@ -289,7 +448,7 @@ def test_stack_resolution_rejects_wrong_account_before_stack_lookup() -> None:
 
 
 def test_service_and_backup_preflights_require_stable_current_state() -> None:
-    now = datetime(2026, 7, 31, tzinfo=UTC)
+    now = datetime(2026, 7, 31, 2, tzinfo=UTC)
     session = _Session(
         {
             "ecs": _Ecs(),
@@ -305,7 +464,7 @@ def test_service_and_backup_preflights_require_stable_current_state() -> None:
     )
 
     assert len(points) == 2
-    assert all(point.creation_date.startswith("2026-07-30") for point in points)
+    assert all(point.creation_date.startswith("2026-07-31") for point in points)
 
 
 def test_service_autoscaling_is_suspended_and_resumed_idempotently() -> None:
@@ -350,6 +509,7 @@ def test_application_health_uses_only_stack_https_url(
     def fake_get(url: str, **kwargs: Any) -> _Response:
         requested.append(url)
         assert kwargs["timeout"] == 20
+        assert kwargs["allow_redirects"] is False
         return _Response()
 
     monkeypatch.setattr("tools.openemr_import.aws.requests.get", fake_get)
@@ -370,7 +530,7 @@ def test_stale_recovery_points_block_execution() -> None:
 
 
 def test_recovery_point_preflight_checks_every_page() -> None:
-    now = datetime(2026, 7, 31, tzinfo=UTC)
+    now = datetime(2026, 7, 31, 2, tzinfo=UTC)
 
     class PaginatedBackup:
         def list_recovery_points_by_resource(self, **kwargs: Any) -> dict[str, Any]:
@@ -413,7 +573,7 @@ def test_upload_refuses_to_overwrite_prior_migration(tmp_path: Path) -> None:
         )
 
 
-def test_upload_uses_bucket_customer_managed_kms_default(tmp_path: Path) -> None:
+def test_upload_binds_bucket_owner_and_customer_managed_kms_key(tmp_path: Path) -> None:
     source = tmp_path / "source.tar"
     source.write_bytes(b"source")
     s3 = _S3()
@@ -428,7 +588,10 @@ def test_upload_uses_bucket_customer_managed_kms_default(tmp_path: Path) -> None
     assert key == "migrations/import-0123456789abcdef/source.tar"
     assert s3.upload is not None
     assert s3.upload[-1]["ExtraArgs"] == {
-        "Tagging": "MigrationId=import-0123456789abcdef",
+        "ExpectedBucketOwner": "123456789012",
+        "ServerSideEncryption": "aws:kms",
+        "SSEKMSKeyId": _context().staging_kms_key_arn,
+        "Tagging": ("MigrationId=import-0123456789abcdef" "&DataClass=ImportSource"),
     }
 
 
@@ -436,6 +599,8 @@ def test_cleanup_deletes_every_version_only_under_migration_prefix() -> None:
     class VersionedS3:
         def __init__(self) -> None:
             self.pages = 0
+            self.multipart_calls = 0
+            self.aborted: list[tuple[str, str]] = []
             self.deleted: list[dict[str, str]] = []
 
         def list_object_versions(self, **kwargs: Any) -> dict[str, Any]:
@@ -476,6 +641,23 @@ def test_cleanup_deletes_every_version_only_under_migration_prefix() -> None:
             assert kwargs["MaxKeys"] == 1
             return {"Versions": [], "DeleteMarkers": [], "IsTruncated": False}
 
+        def list_multipart_uploads(self, **_: Any) -> dict[str, Any]:
+            self.multipart_calls += 1
+            if self.multipart_calls == 1:
+                return {
+                    "Uploads": [
+                        {
+                            "Key": "migrations/import-0123456789abcdef/source.tar",
+                            "UploadId": "incomplete-upload",
+                        }
+                    ],
+                    "IsTruncated": False,
+                }
+            return {"Uploads": [], "IsTruncated": False}
+
+        def abort_multipart_upload(self, **kwargs: Any) -> None:
+            self.aborted.append((kwargs["Key"], kwargs["UploadId"]))
+
         def delete_objects(self, **kwargs: Any) -> dict[str, Any]:
             self.deleted.extend(kwargs["Delete"]["Objects"])
             return {}
@@ -486,10 +668,17 @@ def test_cleanup_deletes_every_version_only_under_migration_prefix() -> None:
         region="us-east-1",
         staging_bucket="staging-bucket",
         migration_id="import-0123456789abcdef",
+        expected_bucket_owner="123456789012",
         session=_Session({"s3": s3}),
     )
 
     assert deleted == 3
+    assert s3.aborted == [
+        (
+            "migrations/import-0123456789abcdef/source.tar",
+            "incomplete-upload",
+        )
+    ]
     assert s3.deleted == [
         {
             "Key": "migrations/import-0123456789abcdef/source.tar",
@@ -538,15 +727,21 @@ def test_stack_wide_import_lock_uses_conditional_owner_checked_object() -> None:
     assert s3.put is not None
     assert s3.put["Key"] == "locks/active.json"
     assert s3.put["IfNoneMatch"] == "*"
-    assert "ServerSideEncryption" not in s3.put
+    assert s3.put["ExpectedBucketOwner"] == context.account_id
+    assert s3.put["ServerSideEncryption"] == "aws:kms"
+    assert s3.put["SSEKMSKeyId"] == context.staging_kms_key_arn
     assert s3.deleted == {
         "Bucket": context.staging_bucket,
         "Key": "locks/active.json",
+        "ExpectedBucketOwner": context.account_id,
     }
 
 
 def test_cleanup_fails_closed_on_partial_s3_delete() -> None:
     class PartialDeleteS3:
+        def list_multipart_uploads(self, **_: Any) -> dict[str, Any]:
+            return {"Uploads": [], "IsTruncated": False}
+
         def list_object_versions(self, **_: Any) -> dict[str, Any]:
             return {
                 "Versions": [
@@ -566,6 +761,7 @@ def test_cleanup_fails_closed_on_partial_s3_delete() -> None:
             region="us-east-1",
             staging_bucket="staging-bucket",
             migration_id="import-0123456789abcdef",
+            expected_bucket_owner="123456789012",
             session=_Session({"s3": PartialDeleteS3()}),
         )
 
@@ -600,11 +796,13 @@ def test_task_launch_is_private_scoped_and_contains_no_credentials() -> None:
 
 def test_execution_receipt_round_trip_is_owner_only(tmp_path: Path) -> None:
     receipt = ExecutionReceipt(
-        schema_version=1,
+        schema_version=3,
         migration_id="import-0123456789abcdef",
         account_id="123456789012",
         region="us-east-1",
         stack_name="OpenEMR",
+        stack_creation_time="2026-07-31T00:00:00+00:00",
+        stack_last_updated_time=None,
         cluster_name="openemr",
         service_name="web",
         service_url="https://openemr.example.test",
@@ -613,6 +811,11 @@ def test_execution_receipt_round_trip_is_owner_only(tmp_path: Path) -> None:
         task_arn="task",
         task_definition_arn="task-definition",
         staging_bucket="bucket",
+        staging_kms_key_arn="arn:aws:kms:us-east-1:123456789012:key/example",
+        task_security_group_id="sg-0123456789abcdef0",
+        private_subnet_ids=("subnet-0123abcd", "subnet-4567efab"),
+        database_arn="arn:aws:rds:us-east-1:123456789012:cluster:openemr",
+        efs_arn="arn:aws:elasticfilesystem:us-east-1:123456789012:file-system/fs-0123456789abcdef0",
         source_key="migrations/import-0123456789abcdef/source.tar",
         started_at="2026-07-31T00:00:00+00:00",
         recovery_point_arns=("db", "efs"),
@@ -629,11 +832,13 @@ def test_execution_receipt_round_trip_is_owner_only(tmp_path: Path) -> None:
 
 def test_execution_receipt_rejects_symlinked_state_directory(tmp_path: Path) -> None:
     receipt = ExecutionReceipt(
-        schema_version=1,
+        schema_version=3,
         migration_id="import-0123456789abcdef",
         account_id="123456789012",
         region="us-east-1",
         stack_name="OpenEMR",
+        stack_creation_time="2026-07-31T00:00:00+00:00",
+        stack_last_updated_time=None,
         cluster_name="openemr",
         service_name="web",
         service_url="https://openemr.example.test",
@@ -642,6 +847,11 @@ def test_execution_receipt_rejects_symlinked_state_directory(tmp_path: Path) -> 
         task_arn="task",
         task_definition_arn="task-definition",
         staging_bucket="bucket",
+        staging_kms_key_arn="arn:aws:kms:us-east-1:123456789012:key/example",
+        task_security_group_id="sg-0123456789abcdef0",
+        private_subnet_ids=("subnet-0123abcd", "subnet-4567efab"),
+        database_arn="arn:aws:rds:us-east-1:123456789012:cluster:openemr",
+        efs_arn="arn:aws:elasticfilesystem:us-east-1:123456789012:file-system/fs-0123456789abcdef0",
         source_key="migrations/import-0123456789abcdef/source.tar",
         started_at="2026-07-31T00:00:00+00:00",
         recovery_point_arns=("db", "efs"),

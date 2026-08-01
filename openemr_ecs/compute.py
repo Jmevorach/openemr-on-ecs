@@ -1087,6 +1087,9 @@ class ComputeComponents:
     ) -> ecs.FargateTaskDefinition:
         """Create a dormant one-off task definition for guarded imports."""
 
+        staging_key = staging_bucket.encryption_key
+        if staging_key is None:
+            raise RuntimeError("Import staging bucket requires a customer-managed encryption key")
         import_task_definition = ecs.FargateTaskDefinition(
             self.scope,
             "OpenEMRImportTaskDefinition",
@@ -1113,6 +1116,8 @@ class ComputeComponents:
             ),
             environment={
                 "IMPORT_STAGING_BUCKET": staging_bucket.bucket_name,
+                "IMPORT_STAGING_BUCKET_OWNER": Stack.of(self.scope).account,
+                "IMPORT_STAGING_KMS_KEY_ARN": staging_key.key_arn,
                 "MYSQL_DATABASE": "openemr",
                 "MYSQL_SSL_CA": "/etc/ssl/certs/aws-rds-global.pem",
                 "OPENEMR_SITES_MOUNT_ROOT": "/mnt/openemr-sites",

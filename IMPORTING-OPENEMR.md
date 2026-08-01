@@ -18,7 +18,8 @@ Automatic execution supports only all of the following:
   container version;
 - one site named `default`;
 - a recognizable MySQL or MariaDB logical dump;
-- both OpenEMR document-encryption key files (`sixa` and `sixb`);
+- both OpenEMR 8.2 current document-encryption key files (`sevena` and
+  `sevenb`), with valid versioned encrypted-key framing;
 - a newly initialized, non-production target with no patients, encounters, or
   documents; and
 - recent completed AWS Backup recovery points for both Aurora and the sites EFS
@@ -97,14 +98,20 @@ them even if every CLI confirmation is supplied. The import-target deployment
 adds:
 
 - a dormant ARM64 Fargate task definition (it never runs automatically);
-- a private, versioned, KMS-encrypted S3 staging bucket with a one-day current
-  and noncurrent-version lifecycle;
+- a private, versioned, KMS-encrypted S3 staging bucket where source archive
+  versions expire after one day, bounded status/recovery evidence expires after
+  30 days, and incomplete multipart uploads abort after one day;
 - a 50 GiB ephemeral work volume;
 - read/write access to only that staging bucket;
 - an import-only EFS access point plus a write/rename probe that must pass
   before any database replacement; and
 - CloudFormation outputs used to bind the CLI to one account, region, and
   stack.
+
+Execution also requires the import-target stack to be less than 24 hours old
+and to have no CloudFormation update timestamp. This prevents enabling import
+mode later on an existing stack; if the window expires or an update is needed,
+destroy the unused target and create a new import-target stack.
 
 The operator needs narrowly scoped permission to:
 
@@ -132,7 +139,9 @@ with KMS encryption, fully suspends desired-count scaling, and stops the
 OpenEMR service. The worker then revalidates checksums and archive safety,
 rejects SQL client commands while enabling MariaDB sandbox and binary modes,
 proves representative clinical and operational tables are unused, imports the
-database, atomically swaps the site directory, and validates the result.
+database, atomically swaps the site directory, and validates the result. Before
+the first mutation, it writes a TLS-protected logical dump of the verified-fresh
+target database into the migration's owner-only EFS rollback directory.
 
 The exact confirmation token is:
 
@@ -162,8 +171,11 @@ The command waits for the task. On success it restores the original ECS desired
 count, checks the HTTPS login page, and resumes autoscaling. On a worker or
 health failure, the service remains stopped and autoscaling remains suspended,
 so the configured minimum capacity cannot restart tasks during database or EFS
-mutation. If task-launch status is uncertain, the deterministic ECS `startedBy`
-value is the migration ID; reconcile it before any recovery action.
+mutation. If a worker failure occurs after mutation begins, the worker first
+attempts to restore both the baseline database dump and the original EFS
+`default` directory; status records whether that rollback succeeded. If
+task-launch status is uncertain, the deterministic ECS `startedBy` value is the
+migration ID; reconcile it before any recovery action.
 
 Local execution receipts are mode `0600` under `.openemr-import/`, which is
 gitignored. They contain resource identifiers and recovery-point references,
@@ -190,7 +202,9 @@ restart and health-check the service explicitly:
   --confirmation-token 'FINALIZE:import-<id>'
 ```
 
-Never finalize a failed or uncertain import. Keep the service stopped and
+Never finalize a failed or uncertain import. Even when the worker reports a
+successful automatic rollback, keep the service stopped until the original
+target state has been independently checked. If automatic rollback failed,
 restore the recovery-point ARNs recorded in the local receipt:
 
 1. restore Aurora and EFS using the repository backup/restore procedure;
@@ -200,13 +214,22 @@ restore the recovery-point ARNs recorded in the local receipt:
 5. resume ECS service autoscaling; and
 6. retain the failed staging evidence until the incident is understood.
 
+AWS Backup restores are not performed automatically because Aurora and EFS
+restore jobs create replacement resources that must be deliberately reconciled
+with CloudFormation. Before approving an import, maintainers must rehearse the
+organization's resource-replacement runbook using the exact Aurora and EFS
+recovery-point workflow in [BACKUP-RESTORE-GUIDE.md](BACKUP-RESTORE-GUIDE.md).
+Do not treat the presence of a recovery point as proof that replacement and
+application validation have been rehearsed.
+
 The worker also keeps the original EFS `default` directory under a
 migration-scoped rollback path. This is a convenience copy, not a replacement
 for AWS Backup.
 
 ## Cleanup
 
-Cleanup permanently deletes the migration's EFS rollback copy, every version
+Cleanup permanently deletes the migration's EFS rollback copy and baseline
+database dump, every version
 and delete marker for its S3 source and status objects, releases the
 owner-checked stack-wide lock, and deletes the local receipt.
 It is allowed only after the worker reports success, the original ECS task

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import sys
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -21,7 +21,7 @@ from app import (
 )
 from tools._shared import CommandResult, ToolError, fingerprint, hash_account_id
 from tools.live_e2e import docker_proxy
-from tools.live_e2e.aws import LiveE2EAws, _iam_principal_arn
+from tools.live_e2e.aws import _FATAL_LOG_PATTERN, LiveE2EAws, _iam_principal_arn
 from tools.live_e2e.cli import build_parser
 from tools.live_e2e.models import SCHEMA_VERSION, CheckResult, PhaseTiming, ResidualResource, RunResult
 from tools.live_e2e.report import (
@@ -44,6 +44,7 @@ from tools.live_e2e.runner import (
     _directory_fingerprint,
     _docker_build_duration,
     _repository_slug,
+    _validate_e2e_template,
     deployment_contexts,
     stack_name,
     validate_inputs,
@@ -92,10 +93,65 @@ def _root(path: Path) -> Path:
     return path
 
 
+def _safe_e2e_template() -> dict[str, Any]:
+    return {
+        "Outputs": {"LiveE2ERunId": {"Value": "e2e-safe-run"}},
+        "Resources": {
+            "Certificate": {"Type": "AWS::CertificateManager::Certificate", "Properties": {}},
+            "Dns": {
+                "Type": "AWS::Route53::RecordSet",
+                "Properties": {"HostedZoneId": "ZSAFE123", "AliasTarget": {"DNSName": "example"}},
+            },
+            "Listener": {
+                "Type": "AWS::ElasticLoadBalancingV2::Listener",
+                "Properties": {"Certificates": [{"CertificateArn": {"Ref": "Certificate"}}]},
+            },
+            "Service": {"Type": "AWS::ECS::Service", "Properties": {"DesiredCount": 1}},
+            "Database": {
+                "Type": "AWS::RDS::DBCluster",
+                "Properties": {"DeletionProtection": False},
+                "DeletionPolicy": "Delete",
+                "UpdateReplacePolicy": "Delete",
+            },
+            "Logs": {
+                "Type": "AWS::Logs::LogGroup",
+                "Properties": {},
+                "DeletionPolicy": "Delete",
+                "UpdateReplacePolicy": "Delete",
+            },
+            "Parameter": {
+                "Type": "AWS::SSM::Parameter",
+                "Properties": {"Name": "swarm_mode_safe123"},
+            },
+        },
+    }
+
+
 @pytest.fixture(autouse=True)
 def _clear_inherited_ci_signals(monkeypatch: pytest.MonkeyPatch) -> None:
     for signal in _CI_ENVIRONMENT_SIGNALS:
         monkeypatch.delenv(signal, raising=False)
+
+
+def test_synthesized_e2e_safety_policy_rejects_isolation_and_lifecycle_drift() -> None:
+    template = _safe_e2e_template()
+    _validate_e2e_template(
+        template,
+        run_id="e2e-safe-run",
+        hosted_zone_id="ZSAFE123",
+        resource_suffix="safe123",
+        profile="default",
+    )
+
+    template["Resources"]["Parameter"]["Properties"]["Name"] = "swarm_mode"
+    with pytest.raises(ToolError, match="SSM parameters"):
+        _validate_e2e_template(
+            template,
+            run_id="e2e-safe-run",
+            hosted_zone_id="ZSAFE123",
+            resource_suffix="safe123",
+            profile="default",
+        )
 
 
 def test_empty_report_never_claims_an_unmeasured_timing() -> None:
@@ -414,6 +470,7 @@ def test_docker_proxy_never_records_forwarded_arguments(
         ("example.org", "8.8.8.8/32"),
         ("e2e.example.org", "0.0.0.0/0"),
         ("e2e.example.org", "10.0.0.1/32"),
+        ("e2e.example.org", "224.0.0.1/32"),
         ("e2e.invalid.example", "8.8.8.8/32"),
     ),
 )
@@ -426,6 +483,11 @@ def test_scope_validation_rejects_shared_zones_and_unsafe_networks(domain: str, 
             allowed_ipv4_cidr=cidr,
             profile="default",
         )
+
+
+@pytest.mark.parametrize("message", ("PHP Fatal error: boom", "Fatal PHP error: boom"))
+def test_fatal_log_detection_accepts_normal_php_word_order(message: str) -> None:
+    assert _FATAL_LOG_PATTERN.search(message)
 
 
 def test_live_e2e_hosted_zone_must_have_only_delegation_records() -> None:
@@ -446,12 +508,23 @@ def test_live_e2e_hosted_zone_must_have_only_delegation_records() -> None:
             return Paginator(self.records)
 
     adapter = LiveE2EAws(region="us-east-1", session=SimpleNamespace())
-    adapter._clients["route53:True"] = Route53([{"Type": "NS"}, {"Type": "SOA"}])
-    adapter._assert_dedicated_zone_records({"Id": "/hostedzone/E2E"})
+    adapter._clients["route53:True"] = Route53(
+        [
+            {"Name": "e2e.example.org.", "Type": "NS"},
+            {"Name": "e2e.example.org.", "Type": "SOA"},
+        ]
+    )
+    adapter._assert_dedicated_zone_records({"Id": "/hostedzone/E2E", "Name": "e2e.example.org."})
 
-    adapter._clients["route53:True"] = Route53([{"Type": "NS"}, {"Type": "A"}])
-    with pytest.raises(ToolError, match="existing non-delegation records"):
-        adapter._assert_dedicated_zone_records({"Id": "/hostedzone/E2E"})
+    adapter._clients["route53:True"] = Route53(
+        [
+            {"Name": "e2e.example.org.", "Type": "NS"},
+            {"Name": "e2e.example.org.", "Type": "SOA"},
+            {"Name": "child.e2e.example.org.", "Type": "NS"},
+        ]
+    )
+    with pytest.raises(ToolError, match="exactly its apex"):
+        adapter._assert_dedicated_zone_records({"Id": "/hostedzone/E2E", "Name": "e2e.example.org."})
 
 
 def test_cleanup_ownership_accepts_json_template_body(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -536,12 +609,14 @@ def test_run_stays_locked_without_every_confirmation(tmp_path: Path, monkeypatch
     preflight_dir = root / ".live-e2e" / "preflight"
     preflight_dir.mkdir(parents=True)
     preflight = preflight_dir / f"{run_id}.json"
+    created = datetime.now(timezone.utc)
     preflight.write_text(
         json.dumps(
             {
                 "schema_version": SCHEMA_VERSION,
                 "run_id": run_id,
-                "expires_at": "2099-01-01T00:00:00Z",
+                "created_at": created.isoformat(),
+                "expires_at": (created + timedelta(hours=4)).isoformat(),
                 "git_commit": "a" * 40,
                 "branch": "feature/live-e2e",
                 "repository": "openemr/openemr-on-ecs",
@@ -621,7 +696,7 @@ def test_live_e2e_local_state_root_is_owner_only_and_not_a_symlink(
             pytest.fail("symlinked state directory must never be locked")
 
 
-@pytest.mark.parametrize("signal", ("CI", "GITHUB_ACTIONS", "GITLAB_CI"))
+@pytest.mark.parametrize("signal", _CI_ENVIRONMENT_SIGNALS)
 def test_ci_environment_blocks_live_actions_before_aws(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -675,6 +750,14 @@ class _CleanupAdapter:
     def validate_deployment(self, **_: Any) -> Any:
         raise ToolError("injected validation failure")
 
+    def owned_rds_cluster_identifiers(
+        self,
+        _: str,
+        run_id: str,
+    ) -> tuple[str, ...]:
+        assert run_id == "e2e-cleanup-test"
+        return ("owned-database",)
+
     def delete_owned_stack(self, _: str, run_id: str) -> str:
         assert run_id == "e2e-cleanup-test"
         self.delete_called = True
@@ -692,8 +775,14 @@ class _CleanupAdapter:
         assert self.deleted
         return ()
 
-    def cleanup_owned_log_groups(self, _: str, __: str) -> int:
+    def cleanup_owned_log_groups(
+        self,
+        _: str,
+        __: str,
+        rds_cluster_identifiers: tuple[str, ...] = (),
+    ) -> int:
         assert self.deleted
+        assert rds_cluster_identifiers == ("owned-database",)
         return 0
 
 
@@ -722,12 +811,14 @@ def _write_approved_preflight(root: Path, run_id: str) -> Path:
     (run_dir / "cdk.out").mkdir(parents=True)
     (run_dir / "cdk.out" / "manifest.json").write_text("{}\n", encoding="utf-8")
     preflight = preflight_dir / f"{run_id}.json"
+    created = datetime.now(timezone.utc)
     preflight.write_text(
         json.dumps(
             {
                 "schema_version": SCHEMA_VERSION,
                 "run_id": run_id,
-                "expires_at": "2099-01-01T00:00:00Z",
+                "created_at": created.isoformat(),
+                "expires_at": (created + timedelta(hours=4)).isoformat(),
                 "git_commit": "a" * 40,
                 "branch": "feature/live-e2e",
                 "repository": "openemr/openemr-on-ecs",
@@ -771,6 +862,17 @@ def _write_approved_preflight(root: Path, run_id: str) -> Path:
     )
     preflight.chmod(0o600)
     return preflight
+
+
+def test_consumed_preflight_cannot_be_reused(tmp_path: Path) -> None:
+    root = _root(tmp_path)
+    runner = LiveE2ERunner(root=root)
+    preflight = _write_approved_preflight(root, "e2e-consumed-test")
+    value = json.loads(preflight.read_text(encoding="utf-8"))
+    value["consumed_at"] = datetime.now(timezone.utc).isoformat()
+
+    with pytest.raises(ToolError, match="already consumed"):
+        runner._revalidate_preflight(value)
 
 
 def test_validation_failure_still_deletes_owned_stack_and_records_failure(
@@ -919,31 +1021,29 @@ def test_bootstrap_asset_inventory_reports_shared_retained_assets(tmp_path: Path
 
 
 class _LogPaginator:
-    def __init__(self, matching_name: str) -> None:
-        self.matching_name = matching_name
+    def __init__(self, names: list[str]) -> None:
+        self.names = names
 
-    def paginate(self, **_: Any) -> list[dict[str, Any]]:
-        return [
-            {
-                "logGroups": [
-                    {"logGroupName": self.matching_name},
-                    {"logGroupName": "/aws/lambda/unrelated"},
-                ]
-            }
-        ]
+    def paginate(
+        self,
+        *,
+        logGroupNamePrefix: str,
+    ) -> list[dict[str, Any]]:
+        return [{"logGroups": [{"logGroupName": name} for name in self.names if name.startswith(logGroupNamePrefix)]}]
 
 
 class _Logs:
-    def __init__(self, matching_name: str) -> None:
+    def __init__(self, names: list[str]) -> None:
         self.deleted: list[str] = []
-        self.matching_name = matching_name
+        self.names = names
 
     def get_paginator(self, operation: str) -> _LogPaginator:
         assert operation == "describe_log_groups"
-        return _LogPaginator(self.matching_name)
+        return _LogPaginator(self.names)
 
     def delete_log_group(self, *, logGroupName: str) -> None:
         self.deleted.append(logGroupName)
+        self.names.remove(logGroupName)
 
 
 class _LogSession:
@@ -955,19 +1055,64 @@ class _LogSession:
         return self.logs
 
 
+def test_rds_log_inventory_comes_from_owned_stack_resources() -> None:
+    run_id = "e2e-rds-log-test"
+
+    class CloudFormation:
+        def describe_stacks(self, **_: Any) -> dict[str, Any]:
+            return {
+                "Stacks": [
+                    {
+                        "StackId": "owned-stack-id",
+                        "StackStatus": "CREATE_COMPLETE",
+                        "Outputs": [
+                            {
+                                "OutputKey": "LiveE2ERunId",
+                                "OutputValue": run_id,
+                            }
+                        ],
+                    }
+                ]
+            }
+
+        def list_stack_resources(self, **_: Any) -> dict[str, Any]:
+            return {
+                "StackResourceSummaries": [
+                    {
+                        "ResourceType": "AWS::RDS::DBCluster",
+                        "PhysicalResourceId": "owned-database",
+                    }
+                ]
+            }
+
+    class Session:
+        def client(self, service: str, **_: Any) -> CloudFormation:
+            assert service == "cloudformation"
+            return CloudFormation()
+
+    adapter = LiveE2EAws(region="us-east-1", session=Session())
+
+    assert adapter.owned_rds_cluster_identifiers(
+        "owned-stack-id",
+        run_id,
+    ) == ("owned-database",)
+
+
 def test_orphan_log_cleanup_is_bounded_to_exact_e2e_stack_prefix() -> None:
     name = stack_name("e2e-log-test")
     matching_log = f"/aws/lambda/{name}-CustomA"
-    logs = _Logs(matching_log)
+    rds_log = "/aws/rds/cluster/owned-database/error"
+    logs = _Logs([matching_log, rds_log, "/aws/lambda/unrelated"])
     adapter = LiveE2EAws(region="us-east-1", session=_LogSession(logs))
 
     deleted = adapter.cleanup_owned_log_groups(
         name,
         "e2e-log-test",
+        ("owned-database",),
     )
 
-    assert deleted == 1
-    assert logs.deleted == [matching_log]
+    assert deleted == 2
+    assert logs.deleted == [matching_log, rds_log]
     with pytest.raises(ToolError, match="outside"):
         adapter.cleanup_owned_log_groups("OpenemrEcsStack", "e2e-log-test")
 
@@ -1174,6 +1319,7 @@ def test_deployment_validation_checks_health_logs_waf_and_smoke(
     checks, timings = _ValidationAdapter().validate_deployment(
         stack_name_or_id="stack-id",
         run_id="e2e-validation",
+        profile="default",
         https_timeout_seconds=1,
         poll_seconds=0.001,
     )

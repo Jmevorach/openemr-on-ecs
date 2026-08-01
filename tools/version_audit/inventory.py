@@ -14,6 +14,8 @@ from typing import Iterable, Iterator
 from packaging.requirements import InvalidRequirement, Requirement
 from packaging.utils import canonicalize_name
 
+from tools._shared import ToolError, is_secret_like_path, redact_text, resolve_repo_path
+
 from .models import Declaration
 
 _TEXT_SUFFIXES = {
@@ -45,12 +47,24 @@ def _relative(root: Path, path: Path) -> str:
 
 def _iter_text_files(root: Path) -> Iterator[Path]:
     paths: list[Path] = []
+    root = root.resolve()
     for directory, child_directories, filenames in os.walk(root):
-        child_directories[:] = sorted(name for name in child_directories if name not in _SKIP_DIRECTORIES)
         base = Path(directory)
+        child_directories[:] = sorted(
+            name
+            for name in child_directories
+            if name not in _SKIP_DIRECTORIES
+            and not is_secret_like_path((base / name).relative_to(root))
+            and not (base / name).is_symlink()
+        )
         for filename in filenames:
             path = base / filename
-            if path.suffix.lower() in _TEXT_SUFFIXES or filename == "Dockerfile":
+            relative = path.relative_to(root)
+            if (
+                not path.is_symlink()
+                and not is_secret_like_path(relative)
+                and (path.suffix.lower() in _TEXT_SUFFIXES or filename == "Dockerfile")
+            ):
                 paths.append(path)
     yield from sorted(paths)
 
@@ -87,10 +101,20 @@ def _discover_value_consumers(root: Path, value: str, definitions: Iterable[str]
     return tuple(consumers[:25])
 
 
-def _requirement_lines(path: Path, seen: set[Path] | None = None) -> Iterator[tuple[Path, int, str]]:
+def _requirement_lines(
+    root: Path,
+    path: Path,
+    seen: set[Path] | None = None,
+) -> Iterator[tuple[Path, int, str]]:
     seen = seen or set()
-    path = path.resolve()
-    if path in seen or not path.is_file():
+    if not path.is_file() or path.is_symlink():
+        return
+    path = resolve_repo_path(
+        root,
+        path,
+        allowed_extensions={".in", ".txt"},
+    )
+    if path in seen:
         return
     seen.add(path)
     for line_number, raw_line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
@@ -99,13 +123,25 @@ def _requirement_lines(path: Path, seen: set[Path] | None = None) -> Iterator[tu
             continue
         include = re.match(r"^(?:-r|--requirement|-c|--constraint)\s+(.+)$", stripped)
         if include:
-            include_path = (path.parent / include.group(1).strip()).resolve()
-            yield from _requirement_lines(include_path, seen)
+            try:
+                include_path = resolve_repo_path(
+                    root,
+                    path.parent / include.group(1).strip(),
+                    allowed_extensions={".in", ".txt"},
+                )
+            except ToolError:
+                yield path, line_number, raw_line
+                continue
+            yield from _requirement_lines(root, include_path, seen)
             continue
         yield path, line_number, raw_line
 
 
-def collect_python_declarations(root: Path) -> list[Declaration]:
+def collect_python_declarations(
+    root: Path,
+    *,
+    discover_consumers: bool = True,
+) -> list[Declaration]:
     """Read direct PEP 508 declarations without consulting installed packages."""
 
     requirement_files = [
@@ -118,7 +154,7 @@ def collect_python_declarations(root: Path) -> list[Declaration]:
     malformed: list[Declaration] = []
     for requirement_file in requirement_files:
         category = "python-dev" if requirement_file.name == "requirements-dev.txt" else "python-production"
-        for path, line_number, raw_line in _requirement_lines(requirement_file):
+        for path, line_number, raw_line in _requirement_lines(root, requirement_file):
             line = raw_line.split(" #", 1)[0].strip()
             if line.startswith("-e "):
                 line = line[3:].strip()
@@ -148,7 +184,7 @@ def collect_python_declarations(root: Path) -> list[Declaration]:
         categories = {entry[3] for entry in entries}
         category = next(iter(categories)) if len(categories) == 1 else "python-shared"
         constraints = {str(requirement.specifier) for requirement in requirements}
-        urls = {requirement.url for requirement in requirements if requirement.url}
+        urls = {redact_text(requirement.url) for requirement in requirements if requirement.url}
         exact_versions = {
             specifier.version
             for requirement in requirements
@@ -172,7 +208,7 @@ def collect_python_declarations(root: Path) -> list[Declaration]:
                 current=current,
                 definition=", ".join(definitions),
                 source_kind="pypi" if not urls else "manual",
-                consumers=_discover_value_consumers(root, current, definitions),
+                consumers=(_discover_value_consumers(root, current, definitions) if discover_consumers else ()),
                 constraint=" / ".join(sorted(constraints)),
                 metadata={
                     "normalized_name": normalized_name,
@@ -210,7 +246,11 @@ def _parse_go_requirements(go_mod: Path) -> list[tuple[int, str, str]]:
     return declarations
 
 
-def collect_go_declarations(root: Path) -> list[Declaration]:
+def collect_go_declarations(
+    root: Path,
+    *,
+    discover_consumers: bool = True,
+) -> list[Declaration]:
     """Collect direct Go dependencies and the declared Go language version."""
 
     go_mod = root / "scripts" / "backup-tui" / "go.mod"
@@ -231,7 +271,7 @@ def collect_go_declarations(root: Path) -> list[Declaration]:
                     current=value,
                     definition=definition,
                     source_kind="go-toolchain",
-                    consumers=_discover_value_consumers(root, value, (definition,)),
+                    consumers=(_discover_value_consumers(root, value, (definition,)) if discover_consumers else ()),
                 )
             )
             break
@@ -245,7 +285,7 @@ def collect_go_declarations(root: Path) -> list[Declaration]:
                 current=version,
                 definition=definition,
                 source_kind="go-proxy",
-                consumers=_discover_value_consumers(root, version, (definition,)),
+                consumers=(_discover_value_consumers(root, version, (definition,)) if discover_consumers else ()),
                 metadata={"module": module},
             )
         )
@@ -264,7 +304,11 @@ def _attribute_name(node: ast.AST) -> str | None:
     return None
 
 
-def collect_stack_platform_declarations(root: Path) -> list[Declaration]:
+def collect_stack_platform_declarations(
+    root: Path,
+    *,
+    discover_consumers: bool = True,
+) -> list[Declaration]:
     """Collect platform versions from the central StackConstants class."""
 
     constants_path = root / "openemr_ecs" / "constants.py"
@@ -338,7 +382,7 @@ def collect_stack_platform_declarations(root: Path) -> list[Declaration]:
                 current=current,
                 definition=definition,
                 source_kind=source_kind,
-                consumers=_discover_value_consumers(root, current, (definition,)),
+                consumers=(_discover_value_consumers(root, current, (definition,)) if discover_consumers else ()),
                 metadata=metadata,
             )
         )
@@ -441,7 +485,11 @@ def collect_precommit_declarations(root: Path) -> list[Declaration]:
     return declarations
 
 
-def collect_node_declarations(root: Path) -> list[Declaration]:
+def collect_node_declarations(
+    root: Path,
+    *,
+    discover_consumers: bool = True,
+) -> list[Declaration]:
     """Collect resolved Node.js dependencies from the committed npm manifest."""
 
     package_path = root / "package.json"
@@ -484,7 +532,7 @@ def collect_node_declarations(root: Path) -> list[Declaration]:
                 definition=definition,
                 source_kind="npm",
                 constraint=constraint,
-                consumers=_discover_value_consumers(root, current, (definition,)),
+                consumers=(_discover_value_consumers(root, current, (definition,)) if discover_consumers else ()),
                 metadata={"package": name},
             )
         )
@@ -503,6 +551,13 @@ def collect_workflow_toolchains(root: Path) -> list[Declaration]:
             re.compile(r"PYTHON_VERSION:\s*[\"']?([^\"'\s#]+)"),
         ),
         ("toolchain:pip", "pip", "pypi", re.compile(r"PIP_VERSION:\s*[\"']?([^\"'\s#]+)")),
+        ("toolchain:semver", "semver", "pypi", re.compile(r"SEMVER_VERSION:\s*[\"']?([^\"'\s#]+)")),
+        (
+            "toolchain:shellcheck",
+            "ShellCheck",
+            "github-release",
+            re.compile(r"SHELLCHECK_VERSION:\s*[\"']?([^\"'\s#]+)"),
+        ),
         ("toolchain:node", "Node.js toolchain", "node-toolchain", re.compile(r"NODE_VERSION:\s*[\"']?([^\"'\s#]+)")),
         (
             "toolchain:go-workflow",
@@ -558,6 +613,8 @@ def collect_workflow_toolchains(root: Path) -> list[Declaration]:
         metadata: dict[str, object] = {"conflicting_pins": len(versions) > 1}
         if identifier == "toolchain:golangci-lint":
             metadata["repository"] = "golangci/golangci-lint"
+        if identifier == "toolchain:shellcheck":
+            metadata["repository"] = "koalaman/shellcheck"
         if identifier == "toolchain:cdk-cli":
             metadata["package"] = "aws-cdk"
         result.append(
@@ -575,16 +632,20 @@ def collect_workflow_toolchains(root: Path) -> list[Declaration]:
     return result
 
 
-def collect_declarations(root: Path) -> tuple[Declaration, ...]:
+def collect_declarations(
+    root: Path,
+    *,
+    discover_consumers: bool = True,
+) -> tuple[Declaration, ...]:
     """Return the full normalized, deduplicated declaration inventory."""
 
     declarations = [
-        *collect_python_declarations(root),
-        *collect_go_declarations(root),
-        *collect_stack_platform_declarations(root),
+        *collect_python_declarations(root, discover_consumers=discover_consumers),
+        *collect_go_declarations(root, discover_consumers=discover_consumers),
+        *collect_stack_platform_declarations(root, discover_consumers=discover_consumers),
         *collect_action_declarations(root),
         *collect_precommit_declarations(root),
-        *collect_node_declarations(root),
+        *collect_node_declarations(root, discover_consumers=discover_consumers),
         *collect_workflow_toolchains(root),
     ]
     seen: set[str] = set()

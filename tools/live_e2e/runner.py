@@ -52,6 +52,11 @@ _CI_ENVIRONMENT_SIGNALS = (
     "GITLAB_CI",
     "BUILDKITE",
     "CIRCLECI",
+    "CODEBUILD_BUILD_ARN",
+    "CODEBUILD_BUILD_ID",
+    "BITBUCKET_BUILD_NUMBER",
+    "TEAMCITY_VERSION",
+    "TRAVIS",
     "TF_BUILD",
     "JENKINS_URL",
 )
@@ -174,6 +179,20 @@ class LiveE2ERunner:
             deployment_versions = _assembly_versions(
                 run_dir / "cdk.out",
                 stack_name(run_id),
+            )
+            _validate_e2e_template(
+                _assembly_template(run_dir / "cdk.out", stack_name(run_id)),
+                run_id=run_id,
+                hosted_zone_id=str(aws_facts["hosted_zone_id"]),
+                resource_suffix=str(contexts["openemr_resource_suffix"]),
+                profile=profile,
+            )
+            checks.append(
+                CheckResult(
+                    "synthesized-safety-policy",
+                    "pass",
+                    "ownership, isolation, lifecycle, DNS, and profile invariants verified",
+                )
             )
             resource_types = _assembly_resource_inventory(
                 run_dir / "cdk.out",
@@ -312,6 +331,8 @@ class LiveE2ERunner:
                 raise ToolError("Active AWS account changed after preflight")
             if adapter.describe_stack(str(preflight["stack_name"])) is not None:
                 raise ToolError("Live E2E stack unexpectedly exists before deployment")
+            preflight["consumed_at"] = utc_now()
+            atomic_write_json(self._preflight_path(run_id), preflight)
 
             return self._run_approved(
                 preflight=preflight,
@@ -368,14 +389,24 @@ class LiveE2ERunner:
                 raise ToolError("Active AWS account does not match --approved-account")
             name = str(preflight["stack_name"])
             stack = adapter.describe_stack(name)
+            rds_cluster_identifiers = self._recorded_rds_cluster_identifiers(run_id)
             if stack is not None:
+                rds_cluster_identifiers = adapter.owned_rds_cluster_identifiers(name, run_id)
+                self._update_state(
+                    run_id,
+                    {"rds_cluster_identifiers": list(rds_cluster_identifiers)},
+                )
                 stack_id = adapter.delete_owned_stack(name, run_id)
                 adapter.wait_for_stack_deleted(
                     stack_id or name,
                     timeout_seconds=timeout_seconds,
                     poll_seconds=poll_seconds,
                 )
-            deleted_log_groups = adapter.cleanup_owned_log_groups(name, run_id)
+            deleted_log_groups = adapter.cleanup_owned_log_groups(
+                name,
+                run_id,
+                rds_cluster_identifiers,
+            )
             residuals = _merge_residuals(
                 adapter.residual_resources(run_id),
                 adapter.bootstrap_asset_residuals(self._run_dir(run_id) / "cdk.out"),
@@ -393,19 +424,65 @@ class LiveE2ERunner:
                     "residual_count": len(residuals),
                 },
             )
-            update_cleanup_result(
+            cleanup_phase = PhaseTiming(
+                "cleanup-retry",
+                round(time.monotonic() - cleanup_started, 3),
+                "local-monotonic-clock",
+            )
+            finished_at = utc_now()
+            updated = update_cleanup_result(
                 self.history_path,
                 self.report_path,
                 run_id=run_id,
                 cleanup_status=status,
                 residuals=residuals,
-                phase=PhaseTiming(
-                    "cleanup-retry",
-                    round(time.monotonic() - cleanup_started, 3),
-                    "local-monotonic-clock",
-                ),
-                finished_at=utc_now(),
+                phase=cleanup_phase,
+                finished_at=finished_at,
             )
+            if not updated:
+                state = json.loads(self._state_path(run_id).read_text(encoding="utf-8"))
+                versions = preflight["versions"]
+                append_result(
+                    self.history_path,
+                    self.report_path,
+                    RunResult(
+                        schema_version=SCHEMA_VERSION,
+                        run_id=run_id,
+                        started_at=str(state.get("started_at", preflight["created_at"])),
+                        finished_at=finished_at,
+                        git_commit=str(preflight["git_commit"]),
+                        branch=str(preflight["branch"]),
+                        repository=str(preflight["repository"]),
+                        account_hash=str(preflight["account_hash"]),
+                        region=region,
+                        safe_stack_id=("sha256:" + hashlib.sha256(name.encode("utf-8")).hexdigest()[:12]),
+                        profile=str(preflight["profile"]),
+                        configuration_fingerprint=(f"sha256:{preflight['context_fingerprint']}"),
+                        bootstrap_state=(f"ready-v{int(preflight['bootstrap_version'])}"),
+                        python_version=str(versions["python_version"]),
+                        node_version=str(versions["node_version"]),
+                        cdk_cli_version=str(versions["cdk_cli_version"]),
+                        cdk_library_version=str(versions["cdk_library_version"]),
+                        openemr_version=str(versions["openemr_version"]),
+                        aurora_version=str(versions["aurora_version"]),
+                        test_runner_version=RUNNER_VERSION,
+                        status="interrupted",
+                        stack_status="unknown-after-interruption",
+                        cleanup_status=status,
+                        failure_phase="run-history-unavailable",
+                        import_duration_seconds=None,
+                        phases=(cleanup_phase,),
+                        residuals=residuals,
+                        notes=(
+                            "Original run history was unavailable; this record "
+                            "contains cleanup-only recovery evidence.",
+                        ),
+                        metadata={
+                            "timing_schema": "openemr-live-e2e-v1",
+                            "record_scope": "cleanup-only",
+                        },
+                    ),
+                )
             return status, len(residuals)
 
     def regenerate_report(self) -> None:
@@ -481,6 +558,7 @@ class LiveE2ERunner:
         try:
             deployment_pipeline_started = time.monotonic()
             deployment_attempted = True
+            self._update_state(run_id, {"deployment_attempted": True})
             asset_pipeline = self._cdk_command(
                 cdk_command=str(preflight["cdk_command"]),
                 operation="publish-assets",
@@ -555,6 +633,7 @@ class LiveE2ERunner:
             deployment_checks, validation_phases = adapter.validate_deployment(
                 stack_name_or_id=stack_id,
                 run_id=run_id,
+                profile=str(preflight["profile"]),
                 https_timeout_seconds=readiness_timeout_seconds,
                 poll_seconds=poll_seconds,
             )
@@ -625,6 +704,14 @@ class LiveE2ERunner:
                         cleanup_status = "not-required"
                     else:
                         stack_id = str(stack["StackId"])
+                        rds_cluster_identifiers = adapter.owned_rds_cluster_identifiers(
+                            stack_id,
+                            run_id,
+                        )
+                        self._update_state(
+                            run_id,
+                            {"rds_cluster_identifiers": list(rds_cluster_identifiers)},
+                        )
                         cleanup_request_started = time.monotonic()
                         adapter.delete_owned_stack(stack_id, run_id)
                         phases.append(
@@ -657,6 +744,7 @@ class LiveE2ERunner:
                     deleted_log_groups = adapter.cleanup_owned_log_groups(
                         str(preflight["stack_name"]),
                         run_id,
+                        self._recorded_rds_cluster_identifiers(run_id),
                     )
                     self._update_state(
                         run_id,
@@ -833,9 +921,17 @@ class LiveE2ERunner:
         return branch_name, _repository_slug(remote.stdout.strip())
 
     def _revalidate_preflight(self, value: dict[str, Any]) -> None:
+        created = _parse_timestamp(str(value["created_at"]))
         expires = _parse_timestamp(str(value["expires_at"]))
-        if datetime.now(timezone.utc) > expires:
+        now = datetime.now(timezone.utc)
+        if created > now + timedelta(minutes=5):
+            raise ToolError("Preflight creation time is in the future")
+        if expires <= created or expires - created > timedelta(hours=PREFLIGHT_TTL_HOURS, minutes=1):
+            raise ToolError("Preflight validity window is invalid")
+        if now > expires or now - created > timedelta(hours=PREFLIGHT_TTL_HOURS):
             raise ToolError("Preflight expired; rerun it against current AWS state")
+        if value.get("consumed_at") is not None:
+            raise ToolError("Preflight was already consumed; create a new approved run")
         if self._git_commit_and_clean() != value["git_commit"]:
             raise ToolError("Git commit changed after preflight")
         if _directory_fingerprint(self._run_dir(str(value["run_id"])) / "cdk.out") != value["assembly_fingerprint"]:
@@ -1001,13 +1097,15 @@ class LiveE2ERunner:
         return result
 
     def _load_preflight(self, path: Path) -> dict[str, Any]:
+        if path.is_symlink():
+            raise ToolError("Preflight path must be a regular non-symlink file")
         path = path.resolve()
         expected_root = (self.local_root / "preflight").resolve()
         try:
             path.relative_to(expected_root)
         except ValueError as exc:
             raise ToolError("Preflight file must be inside .live-e2e/preflight") from exc
-        if path.is_symlink() or not path.is_file():
+        if not path.is_file():
             raise ToolError("Preflight path must be a regular non-symlink file")
         if path.stat().st_mode & 0o077:
             raise ToolError("Preflight file must be owner-only")
@@ -1018,6 +1116,7 @@ class LiveE2ERunner:
         required = {
             "schema_version",
             "run_id",
+            "created_at",
             "expires_at",
             "git_commit",
             "branch",
@@ -1064,6 +1163,8 @@ class LiveE2ERunner:
             raise ToolError("Preflight hosted-zone ID is invalid")
         if value["stack_name"] != stack_name(validate_run_id(str(value["run_id"]))):
             raise ToolError("Preflight stack name is invalid")
+        if path != self._preflight_path(str(value["run_id"])).resolve():
+            raise ToolError("Preflight filename does not match its run ID")
         versions = value.get("versions")
         version_keys = {
             "python_version",
@@ -1168,6 +1269,24 @@ class LiveE2ERunner:
         value.update(updates)
         self._write_state(run_id, value)
 
+    def _recorded_rds_cluster_identifiers(
+        self,
+        run_id: str,
+    ) -> tuple[str, ...]:
+        path = self._state_path(run_id)
+        if not path.exists():
+            return ()
+        state = json.loads(path.read_text(encoding="utf-8"))
+        raw = state.get("rds_cluster_identifiers", [])
+        if not isinstance(raw, list) or any(
+            not isinstance(item, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9-]{0,62}", item) for item in raw
+        ):
+            raise ToolError("Recorded RDS cleanup inventory is malformed")
+        identifiers = tuple(sorted(set(raw)))
+        if state.get("stack_id_hash") and not identifiers:
+            raise ToolError("Owned stack was observed without a durable RDS cleanup inventory")
+        return identifiers
+
 
 def deployment_contexts(
     *,
@@ -1252,8 +1371,17 @@ def validate_inputs(
         raise ToolError("Allowed IPv4 CIDR is invalid") from exc
     if network.version != 4 or network.prefixlen != 32:
         raise ToolError("Live E2E requires one explicit public IPv4 /32")
-    if not allow_documentation_values and not network.network_address.is_global:
-        raise ToolError("Live E2E allowed IPv4 address must be globally routable")
+    address = network.network_address
+    if not allow_documentation_values and (
+        not address.is_global
+        or address.is_multicast
+        or address.is_reserved
+        or address.is_unspecified
+        or address.is_loopback
+        or address.is_link_local
+        or address.is_private
+    ):
+        raise ToolError("Live E2E allowed IPv4 address must be a unicast globally routable address")
     if profile not in _PROFILES:
         raise ToolError(f"Profile must be one of: {', '.join(sorted(_PROFILES))}")
 
@@ -1408,6 +1536,85 @@ def _assembly_resource_inventory(
         resource_type = str(resource["Type"])
         inventory[resource_type] = inventory.get(resource_type, 0) + 1
     return dict(sorted(inventory.items()))
+
+
+def _validate_e2e_template(
+    template: dict[str, Any],
+    *,
+    run_id: str,
+    hosted_zone_id: str,
+    resource_suffix: str,
+    profile: str,
+) -> None:
+    """Fail closed when a synthesized assembly violates live-E2E safety policy."""
+
+    resources = template.get("Resources")
+    outputs = template.get("Outputs")
+    if not isinstance(resources, dict) or not isinstance(outputs, dict):
+        raise ToolError("Synthesized E2E template is missing resources or outputs")
+    ownership = outputs.get("LiveE2ERunId")
+    if not isinstance(ownership, dict) or ownership.get("Value") != run_id:
+        raise ToolError("Synthesized E2E template lacks its exact ownership output")
+
+    by_type: dict[str, list[dict[str, Any]]] = {}
+    for resource in resources.values():
+        if not isinstance(resource, dict) or not isinstance(resource.get("Type"), str):
+            raise ToolError("Synthesized E2E template contains an invalid resource")
+        by_type.setdefault(str(resource["Type"]), []).append(resource)
+
+    certificates = by_type.get("AWS::CertificateManager::Certificate", [])
+    records = by_type.get("AWS::Route53::RecordSet", [])
+    if len(certificates) != 1:
+        raise ToolError("Live E2E requires exactly one stack-owned ACM certificate")
+    if not any(
+        isinstance(record.get("Properties"), dict)
+        and record["Properties"].get("HostedZoneId") == hosted_zone_id
+        and isinstance(record["Properties"].get("AliasTarget"), dict)
+        for record in records
+    ):
+        raise ToolError("Live E2E DNS alias is not bound to the preflight-verified hosted zone")
+    listeners = by_type.get("AWS::ElasticLoadBalancingV2::Listener", [])
+    if not listeners or any('"null"' in json.dumps(listener).lower() for listener in listeners):
+        raise ToolError("Live E2E HTTPS listener has no valid certificate binding")
+
+    services = by_type.get("AWS::ECS::Service", [])
+    if len(services) != 1 or services[0].get("Properties", {}).get("DesiredCount") != 1:
+        raise ToolError("Live E2E must synthesize exactly one desired OpenEMR task")
+    clusters = by_type.get("AWS::RDS::DBCluster", [])
+    if len(clusters) != 1:
+        raise ToolError("Live E2E requires exactly one Aurora cluster")
+    cluster = clusters[0]
+    if (
+        cluster.get("Properties", {}).get("DeletionProtection") is not False
+        or cluster.get("DeletionPolicy") != "Delete"
+        or cluster.get("UpdateReplacePolicy") != "Delete"
+    ):
+        raise ToolError("Live E2E Aurora lifecycle is not disposable")
+    if profile == "api-enabled" and cluster.get("Properties", {}).get("EnableHttpEndpoint") is not True:
+        raise ToolError("API-enabled E2E profile did not enable the Aurora Data API")
+
+    for log_group in by_type.get("AWS::Logs::LogGroup", []):
+        if log_group.get("DeletionPolicy") != "Delete" or log_group.get("UpdateReplacePolicy") != "Delete":
+            raise ToolError("Live E2E log groups must use delete lifecycle policies")
+    parameters = by_type.get("AWS::SSM::Parameter", [])
+    if not parameters or any(
+        not isinstance(parameter.get("Properties", {}).get("Name"), str)
+        or not parameter["Properties"]["Name"].endswith(f"_{resource_suffix}")
+        for parameter in parameters
+    ):
+        raise ToolError("Live E2E SSM parameters are not isolated by the run resource suffix")
+
+    forbidden_types = {
+        "AWS::CloudTrail::Trail",
+        "AWS::EMRServerless::Application",
+        "AWS::GlobalAccelerator::Accelerator",
+        "AWS::SageMaker::Domain",
+        "AWS::SES::EmailIdentity",
+        "AWS::SNS::Topic",
+    }
+    present_forbidden = sorted(forbidden_types & by_type.keys())
+    if present_forbidden:
+        raise ToolError("Live E2E profile contains forbidden optional resources: " + ", ".join(present_forbidden))
 
 
 def _assembly_template(

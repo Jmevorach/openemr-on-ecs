@@ -56,11 +56,19 @@ jobs:
         env:
           REPORT_TIMESTAMP: ${{ steps.metadata.outputs.timestamp }}
         run: |
+          set +e
           python -m tools.version_audit \
             --json version-check-report.json \
             --markdown version-check-summary.md \
             --timestamp "$REPORT_TIMESTAMP" \
             --fail-if-all-sources-fail
+          audit_exit=$?
+          set -e
+          echo "audit_exit=$audit_exit" >> "$GITHUB_OUTPUT"
+          if [ ! -s version-check-report.json ]; then
+            echo "Version audit did not produce its JSON report." >&2
+            exit 0
+          fi
           python - <<'PYTHON'
           import json
           import os
@@ -77,6 +85,8 @@ jobs:
           PYTHON
 
       - name: Upload version report
+        if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: version-check-${{ github.run_id }}
@@ -84,9 +94,14 @@ jobs:
             version-check-report.json
             version-check-summary.md
           retention-days: 30
+          if-no-files-found: warn
 
       - name: Publish run summary
-        run: cat version-check-summary.md >> "$GITHUB_STEP_SUMMARY"
+        if: always()
+        run: |
+          if [ -s version-check-summary.md ]; then
+            cat version-check-summary.md >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Create or update GitHub issue
         if: steps.collect.outputs.action_required == 'true' && (github.event_name == 'schedule' || github.event.inputs.create_issue == 'true')
@@ -127,3 +142,48 @@ jobs:
               });
               core.info(`Created issue: ${issue.data.html_url}`);
             }
+
+      - name: Close resolved version audit issue
+        if: steps.collect.outputs.action_required == 'false' && steps.collect.outputs.audit_exit == '0' && (github.event_name == 'schedule' || github.event.inputs.create_issue == 'true')
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const marker = '<!-- openemr-version-audit -->';
+            const issues = await github.paginate(github.rest.issues.listForRepo, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'version-check',
+              per_page: 100
+            });
+            const existing = issues.find(
+              issue => !issue.pull_request && (issue.body || '').includes(marker)
+            );
+            if (existing) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.number,
+                body: 'The latest version audit found no updates or source failures. Closing as resolved.'
+              });
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.number,
+                state: 'closed',
+                state_reason: 'completed'
+              });
+              core.info(`Closed resolved issue: ${existing.html_url}`);
+            }
+
+      - name: Warn on partial source failures
+        if: steps.collect.outputs.partial_failure == 'true'
+        run: echo "::warning::One or more authoritative version sources could not be resolved; review the report."
+
+      - name: Enforce audit source availability
+        if: always() && steps.collect.outputs.audit_exit != '0'
+        env:
+          AUDIT_EXIT: ${{ steps.collect.outputs.audit_exit }}
+        run: |
+          echo "::error::Version audit exited with status ${AUDIT_EXIT:-unknown}; diagnostics were uploaded when available."
+          exit 1

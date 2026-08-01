@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from collections import defaultdict
 
+from tools._shared import redact_text
+
 from .models import AuditReport, Finding, Status
 
 _STATUS_LABELS = {
@@ -20,7 +22,7 @@ _STATUS_LABELS = {
 def _escape(value: object | None) -> str:
     if value is None or value == "":
         return "—"
-    return str(value).replace("|", "\\|").replace("\n", " ")
+    return redact_text(str(value)).replace("|", "\\|").replace("\n", " ")
 
 
 def render_human(report: AuditReport) -> str:

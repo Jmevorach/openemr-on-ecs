@@ -64,7 +64,9 @@ def knowledge_root(tmp_path: Path) -> Path:
         "# Credential rotation\n\nRotate credentials with explicit approval.\n"
         "password = should-not-leak\n"
         "DB_PASSWORD = prefixed-secret-must-not-leak\n"
-        "key = AKIAABCDEFGHIJKLMNOP\n",
+        "key = AKIAABCDEFGHIJKLMNOP\n"
+        '{"password":"inline-must-not-leak","api_key":"also-private",'
+        '"source":"https://user:pass@example.test/archive?token=query-secret"}\n',
         encoding="utf-8",
     )
     return tmp_path
@@ -86,10 +88,14 @@ def test_safe_read_is_bounded_and_redacted(knowledge_root: Path) -> None:
 
     result = knowledge.read_file("docs/guide.md", start_line=1, max_lines=10)
 
-    assert result["total_lines"] == 6
+    assert result["total_lines"] == 7
     assert "should-not-leak" not in result["content"]
     assert "prefixed-secret-must-not-leak" not in result["content"]
     assert "AKIAABCDEFGHIJKLMNOP" not in result["content"]
+    assert "inline-must-not-leak" not in result["content"]
+    assert "also-private" not in result["content"]
+    assert "user:pass" not in result["content"]
+    assert "query-secret" not in result["content"]
     assert "<redacted>" in result["content"]
 
 
@@ -112,6 +118,9 @@ def test_curated_sources_and_commands_match_current_tools() -> None:
     assert "LIVE-E2E.md" in knowledge.topic("live-e2e")["sources"]
     assert "docs/deployment-timing.md" in knowledge.topic("timings")["sources"]
     assert "IMPORTING-OPENEMR.md" in knowledge.topic("imports")["sources"]
+    assert knowledge.topic("mcp")["topic"] == "knowledge-mcp"
+    assert "KNOWLEDGE-MCP.md" in knowledge.topic("knowledge-mcp")["sources"]
+    assert "KNOWLEDGE-MCP.md" in knowledge.overview()["primary_guides"]
     commands = {item["purpose"]: item["command"] for item in knowledge.operational_commands()}
     assert "inspect PATH" in commands["Inspect import source"]
     assert "plan inspection.json" in commands["Plan import"]
@@ -211,6 +220,30 @@ def test_normal_retrieval_uses_no_network_aws_or_subprocess(
     knowledge.configuration()
     knowledge.versions()
     knowledge.operational_commands()
+
+
+def test_version_inventory_does_not_scan_denied_state_directories(
+    knowledge_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    denied = knowledge_root / ".live-e2e"
+    denied.mkdir()
+    denied_file = denied / "private-state.json"
+    denied_file.write_text('{"password":"must-not-be-read"}\n', encoding="utf-8")
+    original_read_text = Path.read_text
+
+    def guarded_read_text(
+        path: Path,
+        encoding: str | None = None,
+        errors: str | None = None,
+    ) -> str:
+        if path == denied_file:
+            raise AssertionError("denied state file was read")
+        return original_read_text(path, encoding=encoding, errors=errors)
+
+    monkeypatch.setattr(Path, "read_text", guarded_read_text)
+
+    RepositoryKnowledge(knowledge_root).versions()
 
 
 def test_fastmcp_tools_resources_and_read_only_annotations(

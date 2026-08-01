@@ -30,6 +30,8 @@ class StackContext:
     account_id: str
     region: str
     stack_name: str
+    stack_creation_time: str
+    stack_last_updated_time: str | None
     cluster_name: str
     service_name: str
     service_url: str
@@ -62,6 +64,8 @@ class ExecutionReceipt:
     account_id: str
     region: str
     stack_name: str
+    stack_creation_time: str
+    stack_last_updated_time: str | None
     cluster_name: str
     service_name: str
     service_url: str
@@ -70,6 +74,11 @@ class ExecutionReceipt:
     task_arn: str
     task_definition_arn: str
     staging_bucket: str
+    staging_kms_key_arn: str
+    task_security_group_id: str
+    private_subnet_ids: tuple[str, ...]
+    database_arn: str
+    efs_arn: str
     source_key: str
     started_at: str
     recovery_point_arns: tuple[str, str]
@@ -178,6 +187,12 @@ def resolve_stack_context(
         "UPDATE_ROLLBACK_COMPLETE",
     }:
         raise AwsImportError(f"Stack is not stable: {status or 'unknown'}")
+    creation_time = stack.get("CreationTime")
+    last_updated_time = stack.get("LastUpdatedTime")
+    if not isinstance(creation_time, datetime) or (
+        last_updated_time is not None and not isinstance(last_updated_time, datetime)
+    ):
+        raise AwsImportError("Stack lifecycle timestamps are missing or invalid")
     outputs = {
         item["OutputKey"]: item["OutputValue"]
         for item in stack.get("Outputs", [])
@@ -220,6 +235,10 @@ def resolve_stack_context(
         account_id=account_id,
         region=region,
         stack_name=stack_name,
+        stack_creation_time=creation_time.astimezone(UTC).isoformat(),
+        stack_last_updated_time=(
+            last_updated_time.astimezone(UTC).isoformat() if isinstance(last_updated_time, datetime) else None
+        ),
         cluster_name=outputs["ECSClusterName"],
         service_name=outputs["ECSServiceName"],
         service_url=outputs["ApplicationURL"],
@@ -233,6 +252,145 @@ def resolve_stack_context(
         database_arn=outputs["DatabaseClusterArn"],
         efs_arn=f"arn:{partition}:elasticfilesystem:{region}:{account_id}:file-system/{filesystem_id}",
     )
+
+
+def assert_new_import_target(
+    context: StackContext,
+    *,
+    maximum_age_hours: int = 24,
+    now: datetime | None = None,
+) -> None:
+    """Require an import-target stack created once and used promptly."""
+
+    if context.import_target_mode != "fresh-target-only":
+        raise AwsImportError("Stack is not marked as a fresh import target")
+    if context.stack_last_updated_time is not None:
+        raise AwsImportError("Fresh import target must not have any stack updates")
+    try:
+        created = datetime.fromisoformat(context.stack_creation_time)
+    except ValueError as exc:
+        raise AwsImportError("Fresh import target creation time is invalid") from exc
+    if created.tzinfo is None:
+        raise AwsImportError("Fresh import target creation time lacks a timezone")
+    age = (now or datetime.now(UTC)) - created.astimezone(UTC)
+    if age < timedelta(0) or age > timedelta(hours=maximum_age_hours):
+        raise AwsImportError(f"Fresh import target must be less than {maximum_age_hours} hours old")
+
+
+def assert_import_resource_bindings(
+    context: StackContext,
+    *,
+    session: Any,
+) -> None:
+    """Verify that import outputs still describe one private, encrypted graph."""
+
+    s3 = _client(session.client, "s3", context.region)
+    s3.head_bucket(
+        Bucket=context.staging_bucket,
+        ExpectedBucketOwner=context.account_id,
+    )
+    encryption = s3.get_bucket_encryption(
+        Bucket=context.staging_bucket,
+        ExpectedBucketOwner=context.account_id,
+    )
+    defaults = [
+        item.get("ApplyServerSideEncryptionByDefault", {})
+        for item in encryption.get("ServerSideEncryptionConfiguration", {}).get("Rules", [])
+    ]
+    if (
+        len(defaults) != 1
+        or defaults[0].get("SSEAlgorithm") != "aws:kms"
+        or defaults[0].get("KMSMasterKeyID") != context.staging_kms_key_arn
+    ):
+        raise AwsImportError("Import staging bucket is not bound to the expected KMS key")
+
+    key = (
+        _client(session.client, "kms", context.region)
+        .describe_key(KeyId=context.staging_kms_key_arn)
+        .get("KeyMetadata", {})
+    )
+    if (
+        key.get("Arn") != context.staging_kms_key_arn
+        or key.get("Enabled") is not True
+        or key.get("KeyManager") != "CUSTOMER"
+        or key.get("KeyUsage") != "ENCRYPT_DECRYPT"
+    ):
+        raise AwsImportError("Import staging KMS key is not enabled and customer managed")
+
+    database_identifier = context.database_arn.rsplit(":", 1)[-1]
+    clusters = (
+        _client(session.client, "rds", context.region)
+        .describe_db_clusters(DBClusterIdentifier=database_identifier)
+        .get("DBClusters", [])
+    )
+    if (
+        len(clusters) != 1
+        or clusters[0].get("DBClusterArn") != context.database_arn
+        or clusters[0].get("Status") != "available"
+    ):
+        raise AwsImportError("Import database output is not the available target cluster")
+
+    file_system_id = context.efs_arn.rsplit("/", 1)[-1]
+    file_systems = (
+        _client(session.client, "efs", context.region)
+        .describe_file_systems(FileSystemId=file_system_id)
+        .get("FileSystems", [])
+    )
+    if (
+        len(file_systems) != 1
+        or file_systems[0].get("FileSystemArn") != context.efs_arn
+        or file_systems[0].get("Encrypted") is not True
+        or file_systems[0].get("LifeCycleState") != "available"
+    ):
+        raise AwsImportError("Import EFS output is not the available encrypted target")
+
+    ec2 = _client(session.client, "ec2", context.region)
+    subnets = ec2.describe_subnets(
+        SubnetIds=list(context.private_subnet_ids),
+    ).get("Subnets", [])
+    security_groups = ec2.describe_security_groups(
+        GroupIds=[context.task_security_group_id],
+    ).get("SecurityGroups", [])
+    vpc_ids = {str(item.get("VpcId", "")) for item in [*subnets, *security_groups] if item.get("VpcId")}
+    if (
+        len(subnets) != len(context.private_subnet_ids)
+        or any(item.get("MapPublicIpOnLaunch") is not False for item in subnets)
+        or len(security_groups) != 1
+        or len(vpc_ids) != 1
+        or security_groups[0].get("IpPermissions")
+    ):
+        raise AwsImportError("Import task network outputs are not one private target VPC")
+
+    task = (
+        _client(session.client, "ecs", context.region)
+        .describe_task_definition(
+            taskDefinition=context.task_definition_arn,
+        )
+        .get("taskDefinition", {})
+    )
+    containers = task.get("containerDefinitions", [])
+    environments = (
+        {str(item.get("name", "")): str(item.get("value", "")) for item in containers[0].get("environment", [])}
+        if len(containers) == 1
+        else {}
+    )
+    efs_volumes = [
+        item.get("efsVolumeConfiguration", {}) for item in task.get("volumes", []) if item.get("efsVolumeConfiguration")
+    ]
+    if (
+        task.get("taskDefinitionArn") != context.task_definition_arn
+        or task.get("networkMode") != "awsvpc"
+        or "FARGATE" not in task.get("requiresCompatibilities", [])
+        or task.get("runtimePlatform", {}).get("cpuArchitecture") != "ARM64"
+        or len(containers) != 1
+        or containers[0].get("name") != "openemr-import"
+        or environments.get("IMPORT_STAGING_BUCKET_OWNER") != context.account_id
+        or environments.get("IMPORT_STAGING_KMS_KEY_ARN") != context.staging_kms_key_arn
+        or len(efs_volumes) != 1
+        or efs_volumes[0].get("fileSystemId") != file_system_id
+        or efs_volumes[0].get("transitEncryption") != "ENABLED"
+    ):
+        raise AwsImportError("Import task definition is not bound to the expected private resources")
 
 
 def assert_service_stable(context: StackContext, *, session: Any) -> int:
@@ -364,6 +522,7 @@ def assert_application_healthy(
                 target,
                 headers={"User-Agent": "openemr-on-ecs-import-health/1"},
                 timeout=20,
+                allow_redirects=False,
             )
             body = getattr(response, "text", "")
             if response.status_code == 200 and isinstance(body, str) and "openemr" in body[:200_000].lower():
@@ -385,7 +544,14 @@ def recent_recovery_points(
     """Require recent completed recovery points for Aurora and EFS."""
 
     backup = _client(session.client, "backup", context.region)
-    threshold = (now or datetime.now(UTC)) - timedelta(hours=maximum_age_hours)
+    try:
+        stack_created = datetime.fromisoformat(context.stack_creation_time).astimezone(UTC)
+    except (ValueError, TypeError) as exc:
+        raise AwsImportError("Stack creation time is invalid") from exc
+    threshold = max(
+        (now or datetime.now(UTC)) - timedelta(hours=maximum_age_hours),
+        stack_created,
+    )
     points: list[RecoveryPoint] = []
     for resource_arn in (context.database_arn, context.efs_arn):
         candidates: list[dict[str, Any]] = []
@@ -446,6 +612,9 @@ def acquire_import_lock(
             ContentType="application/json",
             Metadata={"migration-id": migration_id},
             IfNoneMatch="*",
+            ExpectedBucketOwner=context.account_id,
+            ServerSideEncryption="aws:kms",
+            SSEKMSKeyId=context.staging_kms_key_arn,
         )
     except ClientError as exc:
         code = str(exc.response.get("Error", {}).get("Code", ""))
@@ -465,7 +634,11 @@ def release_import_lock(
 
     s3 = _client(session.client, "s3", context.region)
     try:
-        lock = s3.head_object(Bucket=context.staging_bucket, Key=IMPORT_LOCK_KEY)
+        lock = s3.head_object(
+            Bucket=context.staging_bucket,
+            Key=IMPORT_LOCK_KEY,
+            ExpectedBucketOwner=context.account_id,
+        )
     except ClientError as exc:
         if str(exc.response.get("Error", {}).get("Code", "")) in {"404", "NoSuchKey", "NotFound"}:
             return
@@ -473,7 +646,11 @@ def release_import_lock(
     metadata = lock.get("Metadata", {})
     if not isinstance(metadata, dict) or metadata.get("migration-id") != migration_id:
         raise AwsImportError("Refusing to release an import lock owned by another migration")
-    s3.delete_object(Bucket=context.staging_bucket, Key=IMPORT_LOCK_KEY)
+    s3.delete_object(
+        Bucket=context.staging_bucket,
+        Key=IMPORT_LOCK_KEY,
+        ExpectedBucketOwner=context.account_id,
+    )
 
 
 def upload_source(
@@ -491,6 +668,7 @@ def upload_source(
         Bucket=context.staging_bucket,
         Prefix=f"migrations/{migration_id}/",
         MaxKeys=1,
+        ExpectedBucketOwner=context.account_id,
     )
     if existing.get("Versions") or existing.get("DeleteMarkers"):
         raise AwsImportError("Migration staging prefix already exists; inspect or clean the prior run")
@@ -501,7 +679,10 @@ def upload_source(
         # Rely on the bucket's customer-managed KMS default. Sending only the
         # generic aws:kms header would select the AWS-managed S3 key instead.
         ExtraArgs={
-            "Tagging": f"MigrationId={migration_id}",
+            "ExpectedBucketOwner": context.account_id,
+            "ServerSideEncryption": "aws:kms",
+            "SSEKMSKeyId": context.staging_kms_key_arn,
+            "Tagging": (f"MigrationId={migration_id}&DataClass=ImportSource"),
         },
     )
     return key
@@ -567,11 +748,13 @@ def start_import_task(
     if failures or len(tasks) != 1 or not tasks[0].get("taskArn"):
         raise AwsImportError("ECS rejected the import task launch")
     return ExecutionReceipt(
-        schema_version=1,
+        schema_version=3,
         migration_id=migration_id,
         account_id=context.account_id,
         region=context.region,
         stack_name=context.stack_name,
+        stack_creation_time=context.stack_creation_time,
+        stack_last_updated_time=context.stack_last_updated_time,
         cluster_name=context.cluster_name,
         service_name=context.service_name,
         service_url=context.service_url,
@@ -580,6 +763,11 @@ def start_import_task(
         task_arn=tasks[0]["taskArn"],
         task_definition_arn=context.task_definition_arn,
         staging_bucket=context.staging_bucket,
+        staging_kms_key_arn=context.staging_kms_key_arn,
+        task_security_group_id=context.task_security_group_id,
+        private_subnet_ids=context.private_subnet_ids,
+        database_arn=context.database_arn,
+        efs_arn=context.efs_arn,
         source_key=source_key,
         started_at=datetime.now(UTC).isoformat(),
         recovery_point_arns=(
@@ -685,6 +873,7 @@ def read_remote_status(receipt: ExecutionReceipt, *, session: Any) -> dict[str, 
         response = s3.get_object(
             Bucket=receipt.staging_bucket,
             Key=f"migrations/{receipt.migration_id}/status.json",
+            ExpectedBucketOwner=receipt.account_id,
         )
         body = response["Body"].read(64 * 1024 + 1)
         if len(body) > 64 * 1024:
@@ -714,10 +903,17 @@ def read_remote_status(receipt: ExecutionReceipt, *, session: Any) -> dict[str, 
     if len(tasks) == 1:
         item = tasks[0]
         containers = item.get("containers", [])
+        container = containers[0] if len(containers) == 1 else {}
         task = {
             "last_status": item.get("lastStatus"),
             "stop_code": item.get("stopCode"),
-            "container_exit_code": (containers[0].get("exitCode") if len(containers) == 1 else None),
+            "container_exit_code": container.get("exitCode"),
+            "identity_verified": (
+                item.get("taskArn") == receipt.task_arn
+                and item.get("taskDefinitionArn") == receipt.task_definition_arn
+                and item.get("startedBy") == receipt.migration_id
+                and container.get("name") == "openemr-import"
+            ),
         }
     service_response = ecs.describe_services(
         cluster=receipt.cluster_name,
@@ -758,12 +954,44 @@ def cleanup_staging_scope(
     region: str,
     staging_bucket: str,
     migration_id: str,
+    expected_bucket_owner: str,
     session: Any,
 ) -> int:
     """Delete all versions of only the migration-scoped S3 staging objects."""
 
     s3 = _client(session.client, "s3", region)
     prefix = f"migrations/{migration_id}/"
+    upload_key_marker: str | None = None
+    upload_id_marker: str | None = None
+    while True:
+        upload_arguments: dict[str, Any] = {
+            "Bucket": staging_bucket,
+            "Prefix": prefix,
+            "MaxUploads": 1000,
+            "ExpectedBucketOwner": expected_bucket_owner,
+        }
+        if upload_key_marker:
+            upload_arguments["KeyMarker"] = upload_key_marker
+        if upload_id_marker:
+            upload_arguments["UploadIdMarker"] = upload_id_marker
+        uploads = s3.list_multipart_uploads(**upload_arguments)
+        for upload in uploads.get("Uploads", []):
+            key = upload.get("Key")
+            upload_id = upload.get("UploadId")
+            if isinstance(key, str) and key.startswith(prefix) and isinstance(upload_id, str):
+                s3.abort_multipart_upload(
+                    Bucket=staging_bucket,
+                    Key=key,
+                    UploadId=upload_id,
+                    ExpectedBucketOwner=expected_bucket_owner,
+                )
+        if not uploads.get("IsTruncated"):
+            break
+        upload_key_marker = uploads.get("NextKeyMarker")
+        upload_id_marker = uploads.get("NextUploadIdMarker")
+        if not isinstance(upload_key_marker, str) or not isinstance(upload_id_marker, str):
+            raise AwsImportError("Malformed S3 multipart-upload pagination response")
+
     objects: list[dict[str, str]] = []
     key_marker: str | None = None
     version_marker: str | None = None
@@ -772,6 +1000,7 @@ def cleanup_staging_scope(
             "Bucket": staging_bucket,
             "Prefix": prefix,
             "MaxKeys": 1000,
+            "ExpectedBucketOwner": expected_bucket_owner,
         }
         if key_marker:
             arguments["KeyMarker"] = key_marker
@@ -796,6 +1025,7 @@ def cleanup_staging_scope(
         deletion = s3.delete_objects(
             Bucket=staging_bucket,
             Delete={"Objects": batch, "Quiet": True},
+            ExpectedBucketOwner=expected_bucket_owner,
         )
         if deletion.get("Errors"):
             raise AwsImportError("S3 reported a partial migration cleanup failure")
@@ -804,9 +1034,18 @@ def cleanup_staging_scope(
         Bucket=staging_bucket,
         Prefix=prefix,
         MaxKeys=1,
+        ExpectedBucketOwner=expected_bucket_owner,
     )
     if verification.get("Versions") or verification.get("DeleteMarkers"):
         raise AwsImportError("Migration staging prefix is not empty after cleanup")
+    multipart_verification = s3.list_multipart_uploads(
+        Bucket=staging_bucket,
+        Prefix=prefix,
+        MaxUploads=1,
+        ExpectedBucketOwner=expected_bucket_owner,
+    )
+    if multipart_verification.get("Uploads"):
+        raise AwsImportError("Migration staging prefix retains multipart uploads after cleanup")
     return deleted
 
 
@@ -821,6 +1060,7 @@ def cleanup_staging(
         region=receipt.region,
         staging_bucket=receipt.staging_bucket,
         migration_id=receipt.migration_id,
+        expected_bucket_owner=receipt.account_id,
         session=session,
     )
 
@@ -841,12 +1081,13 @@ def read_receipt(path: Path) -> ExecutionReceipt:
 
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
+        data["private_subnet_ids"] = tuple(data["private_subnet_ids"])
         data["recovery_point_arns"] = tuple(data["recovery_point_arns"])
         data["recovery_point_dates"] = tuple(data["recovery_point_dates"])
         receipt = ExecutionReceipt(**data)
     except (OSError, json.JSONDecodeError, TypeError) as exc:
         raise AwsImportError(f"Invalid execution receipt: {path}") from exc
-    if receipt.schema_version != 1:
+    if receipt.schema_version != 3:
         raise AwsImportError("Unsupported execution receipt schema")
     if not re.fullmatch(r"import-[a-f0-9]{16}", receipt.migration_id):
         raise AwsImportError("Invalid migration identifier in execution receipt")

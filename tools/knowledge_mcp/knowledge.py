@@ -46,6 +46,7 @@ _TOP_LEVEL_FILES = {
     "DETAILS.md",
     "GETTING-STARTED.md",
     "IMPORTING-OPENEMR.md",
+    "KNOWLEDGE-MCP.md",
     "LIVE-E2E.md",
     "MAINTAINERS.md",
     "README-TESTING.md",
@@ -199,6 +200,10 @@ _TOPICS: dict[str, dict[str, Any]] = {
         "summary": "The maintainer guide centralizes audit, test, import, MCP, E2E, and report commands.",
         "sources": ["MAINTAINERS.md"],
     },
+    "knowledge-mcp": {
+        "summary": "The local read-only MCP exposes bounded, redacted repository knowledge over STDIO.",
+        "sources": ["KNOWLEDGE-MCP.md", "tools/knowledge_mcp/server.py"],
+    },
 }
 
 
@@ -286,6 +291,7 @@ class RepositoryKnowledge:
                 "ARCHITECTURE.md",
                 "DETAILS.md",
                 "TROUBLESHOOTING.md",
+                "KNOWLEDGE-MCP.md",
                 "MAINTAINERS.md",
             ],
             "safety": "This server is offline and read-only; it cannot execute operational commands.",
@@ -332,6 +338,7 @@ class RepositoryKnowledge:
             "valkey": "elasticache",
             "database": "aurora",
             "import": "imports",
+            "mcp": "knowledge-mcp",
             "e2e": "live-e2e",
             "timings": "timing-reports",
             "route-53": "route53",
@@ -437,7 +444,10 @@ class RepositoryKnowledge:
             raise KnowledgeError("At most 20 categories may be requested")
         declarations = [
             declaration
-            for declaration in collect_declarations(self.root)
+            for declaration in collect_declarations(
+                self.root,
+                discover_consumers=False,
+            )
             if not selected or declaration.category in selected
         ]
         return {

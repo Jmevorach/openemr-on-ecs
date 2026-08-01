@@ -39,6 +39,8 @@ The live E2E utility deploys a real, isolated OpenEMR stack, validates it, recor
   snapshot and protection behavior.
 - Explicit VPC, WAF, and application log groups use delete policies in E2E
   stacks; normal stack log-retention policies are unchanged.
+- Aurora log groups created outside the stack are inventoried from the exact
+  owned RDS resource before deletion, then explicitly removed and verified.
 - KMS keys can remain visible in `PendingDeletion` after a successful stack deletion. The report labels those delayed deletions as expected residuals; any other residual makes the run fail.
 - Content-addressed file and container-image assets remain in the account's shared CDK bootstrap bucket and repository. The runner verifies and reports them as expected shared residuals rather than deleting assets that another stack may use.
 

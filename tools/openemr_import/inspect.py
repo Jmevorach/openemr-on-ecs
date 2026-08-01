@@ -20,13 +20,10 @@ from .archive import _safe_member_name, scan_sites_archive
 from .models import SCHEMA_VERSION, ArchiveLimits, SourceInspection
 
 _SQL_NAMES = ("openemr.sql.gz", "openemr.sql")
-_SITE_NAMES = (
-    "openemr.tar.gz",
-    "sites.tar.gz",
-    "sites.tgz",
-    "sites.tar",
-    "sites.zip",
-)
+# Execution intentionally supports only OpenEMR's canonical native-backup member.
+# Keeping inspection aligned prevents a plan from passing offline and then failing
+# only after the target service has been stopped.
+_SITE_NAMES = ("openemr.tar.gz",)
 
 
 @dataclass(frozen=True)

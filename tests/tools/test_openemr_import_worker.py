@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import gzip
 import importlib.util
 import io
@@ -12,6 +13,8 @@ from types import ModuleType
 from typing import Any
 
 import pytest
+
+_VALID_SEVEN_KEY = b"007" + base64.b64encode(b"k" * 112)
 
 
 def _worker() -> ModuleType:
@@ -36,7 +39,13 @@ def _add(
     archive.addfile(member, io.BytesIO(content))
 
 
-def _sites(path: Path, *, unsafe_upload: bool = False) -> Path:
+def _sites(
+    path: Path,
+    *,
+    unsafe_upload: bool = False,
+    invalid_keys: bool = False,
+) -> Path:
+    key_material = b"not-an-openemr-key" if invalid_keys else _VALID_SEVEN_KEY
     with tarfile.open(path, mode="w:gz") as archive:
         _add(
             archive,
@@ -48,13 +57,13 @@ def _sites(path: Path, *, unsafe_upload: bool = False) -> Path:
         _add(archive, "sites/default/documents/patient.pdf", b"patient")
         _add(
             archive,
-            "sites/default/documents/logs_and_misc/methods/sixa",
-            b"a",
+            "sites/default/documents/logs_and_misc/methods/sevena",
+            key_material,
         )
         _add(
             archive,
-            "sites/default/documents/logs_and_misc/methods/sixb",
-            b"b",
+            "sites/default/documents/logs_and_misc/methods/sevenb",
+            key_material,
         )
         _add(archive, "sites/default/images/logo.png", b"logo")
         _add(archive, "sites/default/referral_template.html", b"template")
@@ -100,6 +109,18 @@ def test_worker_rejects_script_like_content_in_imported_data(tmp_path: Path) -> 
         )
 
 
+def test_worker_rejects_malformed_current_encryption_keys(tmp_path: Path) -> None:
+    worker = _worker()
+    destination = tmp_path / "import" / "default"
+    destination.mkdir(parents=True)
+
+    with pytest.raises(worker.ImportFailure, match="invalid-document-encryption-keys"):
+        worker._validate_and_extract_sites(
+            _sites(tmp_path / "sites.tar.gz", invalid_keys=True),
+            destination,
+        )
+
+
 def test_site_swap_preserves_target_configuration_and_rollback_copy(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -116,8 +137,8 @@ def test_site_swap_preserves_target_configuration_and_rollback_copy(
     imported = tmp_path / "imported"
     (imported / "documents" / "logs_and_misc" / "methods").mkdir(parents=True)
     (imported / "documents" / "patient.pdf").write_bytes(b"patient")
-    (imported / "documents" / "logs_and_misc" / "methods" / "sixa").write_bytes(b"a")
-    (imported / "documents" / "logs_and_misc" / "methods" / "sixb").write_bytes(b"b")
+    (imported / "documents" / "logs_and_misc" / "methods" / "sevena").write_bytes(_VALID_SEVEN_KEY)
+    (imported / "documents" / "logs_and_misc" / "methods" / "sevenb").write_bytes(_VALID_SEVEN_KEY)
 
     worker._stage_and_swap_sites(imported, mount_root, "import-0123456789abcdef")
 
@@ -176,8 +197,8 @@ def test_site_validation_requires_canonical_nonempty_encryption_keys(tmp_path: P
         )
         _add(archive, "sites/default/sqlconf.php", b"source-credential")
         _add(archive, "sites/default/documents/patient.pdf", b"patient")
-        _add(archive, "sites/default/documents/decoy/sixa", b"a")
-        _add(archive, "sites/default/documents/decoy/sixb", b"b")
+        _add(archive, "sites/default/documents/decoy/sevena", b"a")
+        _add(archive, "sites/default/documents/decoy/sevenb", b"b")
 
     destination = tmp_path / "import" / "default"
     destination.mkdir(parents=True)
@@ -193,6 +214,57 @@ def test_efs_mutability_probe_is_removed_after_atomic_rename(tmp_path: Path) -> 
     worker._assert_efs_mutable(mount_root, "import-0123456789abcdef")
 
     assert not list(mount_root.glob(".openemr-import-probe-*"))
+
+
+def test_fresh_efs_check_rejects_existing_documents_but_allows_baseline_files(
+    tmp_path: Path,
+) -> None:
+    worker = _worker()
+    mount_root = tmp_path / "mount"
+    methods = mount_root / "default" / "documents" / "logs_and_misc" / "methods"
+    methods.mkdir(parents=True)
+    (methods / "sevena").write_bytes(_VALID_SEVEN_KEY)
+    certificates = mount_root / "default" / "documents" / "certificates"
+    certificates.mkdir()
+    (certificates / "mysql-ca").write_text("ca", encoding="utf-8")
+
+    worker._assert_fresh_efs_target(mount_root)
+
+    (mount_root / "default" / "documents" / "patient.pdf").write_bytes(b"patient")
+    with pytest.raises(worker.ImportFailure, match="target-site-is-not-empty"):
+        worker._assert_fresh_efs_target(mount_root)
+
+
+def test_automatic_rollback_restores_site_and_database_baseline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    worker = _worker()
+    migration_id = "import-0123456789abcdef"
+    mount_root = tmp_path / "mount"
+    target = mount_root / "default"
+    target.mkdir(parents=True)
+    (target / "state").write_text("imported", encoding="utf-8")
+    backup = mount_root / ".openemr-import-backup" / migration_id / "default"
+    backup.mkdir(parents=True)
+    (backup / "state").write_text("original", encoding="utf-8")
+    baseline = backup.parent / "target-baseline.sql"
+    baseline.write_text("-- baseline", encoding="utf-8")
+    restored: list[Path] = []
+    monkeypatch.setattr(
+        worker,
+        "_restore_baseline_database",
+        lambda path: restored.append(path),
+    )
+
+    assert worker._attempt_automatic_rollback(
+        mount_root=mount_root,
+        migration_id=migration_id,
+        baseline_sql=baseline,
+        database_mutation_started=True,
+    )
+    assert (target / "state").read_text(encoding="utf-8") == "original"
+    assert restored == [baseline]
 
 
 def test_database_command_never_contains_password(
@@ -215,8 +287,13 @@ def test_database_command_never_contains_password(
     assert os.environ["MYSQL_PASSWORD"] == "must-not-appear"
 
 
-def test_status_object_uses_bucket_customer_managed_kms_default() -> None:
+def test_status_object_binds_bucket_owner_and_customer_managed_kms_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     worker = _worker()
+    key_arn = "arn:aws:kms:us-east-1:123456789012:key/00000000-0000-0000-0000-000000000000"
+    monkeypatch.setenv("IMPORT_STAGING_BUCKET_OWNER", "123456789012")
+    monkeypatch.setenv("IMPORT_STAGING_KMS_KEY_ARN", key_arn)
 
     class S3:
         arguments: dict[str, Any] | None = None
@@ -234,7 +311,9 @@ def test_status_object_uses_bucket_customer_managed_kms_default() -> None:
     )
 
     assert s3.arguments is not None
-    assert "ServerSideEncryption" not in s3.arguments
+    assert s3.arguments["ExpectedBucketOwner"] == "123456789012"
+    assert s3.arguments["ServerSideEncryption"] == "aws:kms"
+    assert s3.arguments["SSEKMSKeyId"] == key_arn
 
 
 def test_database_dump_runs_as_temporary_database_scoped_user(

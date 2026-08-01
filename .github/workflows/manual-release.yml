@@ -26,6 +26,10 @@ permissions:
   contents: write
   pull-requests: write
 
+concurrency:
+  group: manual-release
+  cancel-in-progress: false
+
 env:
   PYTHON_VERSION: "3.14"
   PIP_VERSION: "26.2"
@@ -34,6 +38,7 @@ env:
 jobs:
   create-release:
     name: Create Manual Release
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
 
     steps:
@@ -41,11 +46,16 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          ref: main
 
       - name: Verify repository state
         run: |
           if [ ! -f VERSION ]; then
             echo "::error::Missing VERSION file in repository root."
+            exit 1
+          fi
+          if [ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main)" ]; then
+            echo "::error::Release checkout does not match origin/main."
             exit 1
           fi
 
@@ -145,8 +155,9 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          git push origin HEAD:main
-          git push origin "v${{ steps.version.outputs.next }}"
+          git push --atomic origin \
+            HEAD:refs/heads/main \
+            "refs/tags/v${{ steps.version.outputs.next }}"
 
       - name: Create GitHub release
         id: create_release

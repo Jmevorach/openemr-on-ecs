@@ -7,12 +7,24 @@ import json
 import re
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urljoin, urlparse
 
 import requests
 from packaging.version import InvalidVersion, Version
 
 from .models import Declaration
+
+_ALLOWED_SOURCE_HOSTS = {
+    "api.github.com",
+    "docs.aws.amazon.com",
+    "endoflife.date",
+    "go.dev",
+    "hub.docker.com",
+    "nodejs.org",
+    "proxy.golang.org",
+    "pypi.org",
+    "registry.npmjs.org",
+}
 
 
 class SourceError(RuntimeError):
@@ -58,6 +70,22 @@ def _go_proxy_escape(module: str) -> str:
     return "".join(escaped)
 
 
+def _validate_source_url(url: str) -> str:
+    """Require an HTTPS URL on the audit's fixed authoritative host allowlist."""
+
+    parsed = urlparse(url)
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname not in _ALLOWED_SOURCE_HOSTS
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.port not in {None, 443}
+        or parsed.fragment
+    ):
+        raise SourceError("Version source URL is outside the authoritative host policy")
+    return url
+
+
 class HttpClient:
     """Small HTTP client with fixed timeouts, response limits, and caching."""
 
@@ -80,8 +108,28 @@ class HttpClient:
 
         if url in self._cache:
             return self._cache[url]
+        response: requests.Response | None = None
         try:
-            response = self.session.get(url, timeout=self.timeout_seconds, stream=True)
+            current_url = _validate_source_url(url)
+            for _ in range(6):
+                response = self.session.get(
+                    current_url,
+                    timeout=self.timeout_seconds,
+                    stream=True,
+                    allow_redirects=False,
+                )
+                if response.status_code not in {301, 302, 303, 307, 308}:
+                    break
+                location = response.headers.get("Location")
+                response.close()
+                response = None
+                if not location:
+                    raise SourceError("Version source redirect omitted its destination")
+                current_url = _validate_source_url(urljoin(current_url, location))
+            else:
+                raise SourceError("Version source exceeded the redirect limit")
+            if response is None:
+                raise SourceError("Version source returned no response")
             response.raise_for_status()
             content_length = response.headers.get("Content-Length")
             if content_length and int(content_length) > self.max_bytes:
@@ -96,6 +144,9 @@ class HttpClient:
             body = b"".join(chunks)
         except (requests.RequestException, ValueError) as exc:
             raise SourceError(str(exc)) from exc
+        finally:
+            if response is not None:
+                response.close()
         self._cache[url] = body
         return body
 
@@ -125,6 +176,18 @@ class VersionSources:
 
     def resolve(self, declaration: Declaration) -> Resolution:
         """Dispatch a declaration to its source-specific resolver."""
+
+        try:
+            return self._resolve_unchecked(declaration)
+        except SourceError:
+            raise
+        except (AttributeError, InvalidVersion, KeyError, TypeError, ValueError) as exc:
+            raise SourceError(
+                f"Malformed {declaration.source_kind} response for {declaration.name}",
+            ) from exc
+
+    def _resolve_unchecked(self, declaration: Declaration) -> Resolution:
+        """Resolve one declaration while allowing the public wrapper to isolate parsing failures."""
 
         source_kind = declaration.source_kind
         if source_kind == "pypi":
@@ -299,6 +362,12 @@ class VersionSources:
         version = str(data.get("version", "")).strip()
         if not version:
             raise SourceError(f"npm did not return a latest version for {package}")
+        try:
+            parsed = Version(version)
+        except InvalidVersion as exc:
+            raise SourceError(f"npm returned an invalid latest version for {package}") from exc
+        if parsed.is_prerelease or parsed.is_devrelease:
+            raise SourceError(f"npm latest points to a prerelease for {package}")
         return Resolution(latest=version, source_url=url)
 
     def _openemr_container(self, declaration: Declaration) -> Resolution:
@@ -310,7 +379,7 @@ class VersionSources:
         observed_current_digest: str | None = None
         pages = 0
         while url and pages < 20:
-            data = self.client.get_json(url)
+            data = self.client.get_json(_validate_source_url(url))
             pages += 1
             for entry in data.get("results", []):
                 tag = str(entry.get("name", "")).strip()
@@ -327,7 +396,7 @@ class VersionSources:
                 except InvalidVersion:
                     continue
                 architectures = {str(image.get("architecture", "")).lower() for image in entry.get("images", [])}
-                if architectures and "arm64" not in architectures:
+                if "arm64" not in architectures:
                     continue
                 if parsed.is_prerelease or parsed.is_devrelease:
                     prerelease.append(tag)

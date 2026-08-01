@@ -88,6 +88,21 @@ def test_python_inventory_reports_malformed_requirement(tmp_path: Path) -> None:
     assert declarations[0].metadata["error"] == "Invalid PEP 508 requirement"
 
 
+def test_python_requirement_includes_cannot_escape_repository(tmp_path: Path) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    root = _repository(repository)
+    outside = tmp_path / "outside.txt"
+    outside.write_text("private-package==9.9.9\n", encoding="utf-8")
+    (root / "requirements.txt").write_text("-r ../outside.txt\n", encoding="utf-8")
+
+    declarations = collect_python_declarations(root)
+
+    assert len(declarations) == 1
+    assert declarations[0].source_kind == "inventory-error"
+    assert "private-package" not in declarations[0].name
+
+
 def test_go_inventory_includes_only_direct_modules(tmp_path: Path) -> None:
     root = _repository(tmp_path)
     (root / "scripts" / "backup-tui" / "go.mod").write_text(
@@ -111,7 +126,9 @@ def test_toolchain_inventory_binds_workflows_manifests_and_dockerfiles(
     root = _repository(tmp_path)
     workflow = root / ".github" / "workflows" / "ci.yml"
     workflow.write_text(
-        'env:\n  PYTHON_VERSION: "3.14"\n  NODE_VERSION: "24"\n  PIP_VERSION: "26.2"\n',
+        'env:\n  PYTHON_VERSION: "3.14"\n  NODE_VERSION: "24"\n'
+        '  PIP_VERSION: "26.2"\n  SEMVER_VERSION: "3.0.4"\n'
+        '  SHELLCHECK_VERSION: "0.11.0"\n',
         encoding="utf-8",
     )
     (root / "package.json").write_text(
@@ -133,6 +150,9 @@ def test_toolchain_inventory_binds_workflows_manifests_and_dockerfiles(
     assert "package.json:1" in declarations["toolchain:node"].definition
     assert declarations["toolchain:pip"].current == "26.2"
     assert declarations["toolchain:pip"].source_kind == "pypi"
+    assert declarations["toolchain:semver"].current == "3.0.4"
+    assert declarations["toolchain:shellcheck"].current == "0.11.0"
+    assert declarations["toolchain:shellcheck"].metadata["repository"] == "koalaman/shellcheck"
 
     dockerfile.write_text(
         "ARG PYTHON_VERSION=3.13\nFROM python:${PYTHON_VERSION}-alpine\n",
@@ -161,6 +181,18 @@ def test_stack_inventory_uses_ast_not_regex(tmp_path: Path) -> None:
     assert declarations["container:openemr"].metadata["arm64_digest"] == f"sha256:{'a' * 64}"
     assert declarations["platform:aurora-mysql"].current == "3.12.0"
     assert declarations["platform:lambda-python"].current == "3.14"
+
+
+def test_compose_openemr_images_match_the_deployment_version() -> None:
+    root = Path(__file__).resolve().parents[2]
+    declarations = {item.identifier: item for item in collect_stack_platform_declarations(root)}
+    expected = f"openemr/openemr:{declarations['container:openemr'].current}"
+
+    for compose_file in (
+        root / "compose" / "docker-compose.test.yml",
+        root / "compose" / "docker-compose.test-ssl.yml",
+    ):
+        assert f"image: {expected}" in compose_file.read_text(encoding="utf-8")
 
 
 def test_actions_inventory_deduplicates_consumers(tmp_path: Path) -> None:
@@ -254,7 +286,19 @@ def test_http_client_converts_timeout_to_source_error(monkeypatch: pytest.Monkey
     monkeypatch.setattr(client.session, "get", fail)
 
     with pytest.raises(SourceError, match="slow"):
-        client.get_bytes("https://example.test")
+        client.get_bytes("https://pypi.org/pypi/example/json")
+
+
+def test_http_client_rejects_unapproved_hosts_before_network_access(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = HttpClient()
+    monkeypatch.setattr(
+        client.session,
+        "get",
+        lambda *args, **kwargs: pytest.fail("unapproved URL must not be fetched"),
+    )
+
+    with pytest.raises(SourceError, match="authoritative host policy"):
+        client.get_bytes("https://example.test/redirected-source")
 
 
 class _FakeClient:
@@ -286,6 +330,20 @@ def test_pypi_source_excludes_prereleases_and_yanked_releases() -> None:
 
     assert resolution.latest == "1.0.0"
     assert resolution.latest_prerelease == "1.2.0rc1"
+
+
+def test_malformed_source_response_is_isolated_as_source_error() -> None:
+    source = VersionSources(_FakeClient(["not", "a", "mapping"]))  # type: ignore[arg-type]
+
+    with pytest.raises(SourceError, match="Malformed pypi response"):
+        source.resolve(_declaration())
+
+
+def test_npm_latest_must_be_a_stable_semantic_version() -> None:
+    source = VersionSources(_FakeClient({"version": "3.0.0-rc.1"}))  # type: ignore[arg-type]
+
+    with pytest.raises(SourceError, match="prerelease"):
+        source.resolve(_declaration(source_kind="npm", name="example"))
 
 
 def test_deferrals_require_reason_status_and_future_review_date(tmp_path: Path) -> None:
@@ -409,21 +467,23 @@ def test_openemr_source_requires_official_release_and_arm64() -> None:
 
 
 @pytest.mark.parametrize(
-    ("current", "latest", "expected"),
+    ("current", "latest", "source_kind", "expected"),
     [
-        ("v6", "v6.2.0", Status.CURRENT),
-        ("24", "v24.10.0", Status.CURRENT),
-        ("1.25", "1.25.4", Status.CURRENT),
-        ("1.0.0", "1.1.0", Status.STABLE_UPDATE),
-        ("2.0.0", "1.9.0", Status.MANUAL_REVIEW),
+        ("v6", "v6.2.0", "go-toolchain", Status.CURRENT),
+        ("24", "v24.10.0", "node-toolchain", Status.CURRENT),
+        ("3.14", "3.14.6", "python-toolchain", Status.CURRENT),
+        ("1.25", "1.25.4", "github-release", Status.STABLE_UPDATE),
+        ("1.0.0", "1.1.0", "github-release", Status.STABLE_UPDATE),
+        ("2.0.0", "1.9.0", "github-release", Status.MANUAL_REVIEW),
     ],
 )
 def test_classification_handles_aliases_and_semver(
     current: str,
     latest: str,
+    source_kind: str,
     expected: Status,
 ) -> None:
-    declaration = _declaration(current=current, constraint=None, source_kind="github-release")
+    declaration = _declaration(current=current, constraint=None, source_kind=source_kind)
 
     status, _ = audit._classify(  # pylint: disable=protected-access
         declaration,
@@ -431,6 +491,21 @@ def test_classification_handles_aliases_and_semver(
     )
 
     assert status is expected
+
+
+def test_exact_two_part_python_pin_does_not_track_future_patch_releases() -> None:
+    declaration = _declaration(
+        current="26.2",
+        constraint="==26.2",
+        source_kind="pypi",
+    )
+
+    status, _ = audit._classify(  # pylint: disable=protected-access
+        declaration,
+        Resolution(latest="26.2.1", source_url="https://example.test"),
+    )
+
+    assert status is Status.STABLE_UPDATE
 
 
 def test_python_range_accepting_latest_is_current() -> None:
@@ -570,7 +645,7 @@ def test_markdown_escapes_table_values() -> None:
         status=Status.STABLE_UPDATE,
         definition="file:1",
         source_kind="test",
-        source_url="https://example.test",
+        source_url="https://user:password@example.test/releases?token=must-not-leak",
     )
     report = AuditReport(
         generated_at="2026-01-01T00:00:00Z",
@@ -582,6 +657,8 @@ def test_markdown_escapes_table_values() -> None:
     markdown = render_markdown(report)
 
     assert "demo\\|name" in markdown
+    assert "password" not in markdown
+    assert "must-not-leak" not in markdown
 
 
 def test_cli_writes_reports_and_fail_on_updates(

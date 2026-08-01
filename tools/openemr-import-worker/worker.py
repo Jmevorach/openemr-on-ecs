@@ -7,6 +7,8 @@ It never logs archive member names, SQL content, credentials, or patient data.
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import gzip
 import hashlib
 import io
@@ -42,6 +44,7 @@ TARGET_ONLY_FILENAMES = {
     ".user.ini",
     "web.config",
 }
+REQUIRED_DRIVE_KEY_FILES = ("sevena", "sevenb")
 VERSION_FIELD = re.compile(rb"\$(v_major|v_minor|v_patch|v_tag|v_realpatch)\s*=\s*['\"]([^'\"]*)['\"]")
 SQL_CLIENT_COMMANDS = (
     b"\\!",
@@ -101,6 +104,19 @@ def _canonical_fingerprint(values: dict[str, str]) -> str:
         ensure_ascii=False,
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:32]
+
+
+def _staging_s3_safeguards() -> tuple[str, str]:
+    owner = os.environ.get("IMPORT_STAGING_BUCKET_OWNER", "")
+    key_arn = os.environ.get("IMPORT_STAGING_KMS_KEY_ARN", "")
+    if not re.fullmatch(r"\d{12}", owner):
+        raise ImportFailure("invalid-staging-bucket-owner")
+    if not re.fullmatch(
+        rf"arn:[a-z0-9-]+:kms:[a-z0-9-]+:{owner}:key/[A-Za-z0-9-]+",
+        key_arn,
+    ):
+        raise ImportFailure("invalid-staging-kms-key")
+    return owner, key_arn
 
 
 def _copy_limited(source: IO[bytes], destination: IO[bytes], limit: int) -> int:
@@ -215,8 +231,6 @@ def _validate_and_extract_sites(
     version: str | None = None
     has_sqlconf = False
     has_documents = False
-    has_sixa = False
-    has_sixb = False
     try:
         archive = tarfile.open(archive_path, mode="r:*")
     except (tarfile.TarError, OSError) as exc:
@@ -261,11 +275,6 @@ def _validate_and_extract_sites(
                 continue
             if relative[0] == "documents":
                 has_documents = True
-                lowered_relative = tuple(part.lower() for part in relative)
-                if lowered_relative == ("documents", "logs_and_misc", "methods", "sixa") and member.size > 0:
-                    has_sixa = True
-                if lowered_relative == ("documents", "logs_and_misc", "methods", "sixb") and member.size > 0:
-                    has_sixb = True
             if member.isfile() and (bool(member.mode & 0o111) or path.name.lower().endswith(EXECUTABLE_SUFFIXES)):
                 raise ImportFailure("custom-executable-content")
             output = destination.joinpath(*relative)
@@ -294,9 +303,25 @@ def _validate_and_extract_sites(
         raise ImportFailure("missing-source-version")
     if not has_sqlconf or not has_documents:
         raise ImportFailure("incomplete-default-site")
-    if not has_sixa or not has_sixb:
-        raise ImportFailure("missing-document-encryption-keys")
+    _validate_drive_key_files(destination)
     return version
+
+
+def _validate_drive_key_files(default_site: Path) -> None:
+    methods = default_site / "documents" / "logs_and_misc" / "methods"
+    for label in REQUIRED_DRIVE_KEY_FILES:
+        path = methods / label
+        if path.is_symlink() or not path.is_file() or path.stat().st_size > 4096:
+            raise ImportFailure("missing-document-encryption-keys")
+        content = path.read_bytes().strip()
+        if not content.startswith(b"007"):
+            raise ImportFailure("invalid-document-encryption-keys")
+        try:
+            decoded = base64.b64decode(content[3:], validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise ImportFailure("invalid-document-encryption-keys") from exc
+        if len(decoded) < 96:
+            raise ImportFailure("invalid-document-encryption-keys")
 
 
 def _validate_sql(sql_artifact: Path, output: Path) -> None:
@@ -394,6 +419,60 @@ def _run_mysql(
     return completed.stdout.decode("utf-8").strip() if completed.stdout else ""
 
 
+def _dump_target_database(output: Path) -> None:
+    database = os.environ.get("MYSQL_DATABASE", "openemr")
+    if not re.fullmatch(r"[A-Za-z0-9_]+", database):
+        raise ImportFailure("invalid-database-name")
+    required = (
+        "MYSQL_HOST",
+        "MYSQL_PORT",
+        "MYSQL_USERNAME",
+        "MYSQL_PASSWORD",
+        "MYSQL_SSL_CA",
+    )
+    if any(not os.environ.get(name) for name in required):
+        raise ImportFailure("missing-database-configuration")
+    env = {
+        "HOME": os.environ.get("HOME", "/home/importer"),
+        "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
+        "MYSQL_PWD": os.environ["MYSQL_PASSWORD"],
+    }
+    command = [
+        "mariadb-dump",
+        "--single-transaction",
+        "--skip-lock-tables",
+        "--hex-blob",
+        "--routines",
+        "--triggers",
+        "--events",
+        "--no-tablespaces",
+        "--default-character-set=utf8mb4",
+        f"--host={os.environ['MYSQL_HOST']}",
+        f"--port={os.environ['MYSQL_PORT']}",
+        f"--user={os.environ['MYSQL_USERNAME']}",
+        f"--ssl-ca={os.environ['MYSQL_SSL_CA']}",
+        "--ssl-verify-server-cert",
+        database,
+    ]
+    try:
+        with output.open("xb") as destination:
+            completed = subprocess.run(
+                command,
+                stdout=destination,
+                stderr=subprocess.PIPE,
+                check=False,
+                env=env,
+                timeout=7200,
+            )
+    except (OSError, subprocess.SubprocessError) as exc:
+        output.unlink(missing_ok=True)
+        raise ImportFailure("target-baseline-dump-failed") from exc
+    if completed.returncode != 0 or not output.is_file() or output.stat().st_size < 1:
+        output.unlink(missing_ok=True)
+        raise ImportFailure("target-baseline-dump-failed")
+    output.chmod(0o600)
+
+
 def _assert_empty_target() -> None:
     database = os.environ.get("MYSQL_DATABASE", "openemr")
     tables = set(_run_mysql(database, "--execute=SHOW TABLES").splitlines())
@@ -457,6 +536,33 @@ def _assert_efs_mutable(mount_root: Path, migration_id: str) -> None:
         shutil.rmtree(renamed, ignore_errors=True)
 
 
+def _assert_fresh_efs_target(mount_root: Path) -> None:
+    """Reject existing document content while allowing only generated baseline files."""
+
+    default_site = mount_root / "default"
+    documents = default_site / "documents"
+    if not documents.is_dir():
+        raise ImportFailure("target-documents-directory-missing")
+    key_name = re.compile(r"(?:one|two|three|four|five|six|seven)(?:a|b)?")
+    for path in documents.rglob("*"):
+        if path.is_symlink():
+            raise ImportFailure("unsafe-target-site-path")
+        if not path.is_file():
+            continue
+        relative = path.relative_to(default_site)
+        if path.name.lower() in TARGET_ONLY_FILENAMES:
+            continue
+        if relative == Path("documents/certificates/mysql-ca"):
+            continue
+        if (
+            relative.parts[:3] == ("documents", "logs_and_misc", "methods")
+            and len(relative.parts) == 4
+            and key_name.fullmatch(relative.name)
+        ):
+            continue
+        raise ImportFailure("target-site-is-not-empty")
+
+
 def _replace_database(sql_path: Path, migration_id: str) -> None:
     database = os.environ.get("MYSQL_DATABASE", "openemr")
     if not re.fullmatch(r"[A-Za-z0-9_]+", database):
@@ -487,6 +593,18 @@ def _replace_database(sql_path: Path, migration_id: str) -> None:
             )
     finally:
         _run_mysql(stdin=io.BytesIO(teardown))
+
+
+def _restore_baseline_database(sql_path: Path) -> None:
+    database = os.environ.get("MYSQL_DATABASE", "openemr")
+    if not re.fullmatch(r"[A-Za-z0-9_]+", database):
+        raise ImportFailure("invalid-database-name")
+    _run_mysql(
+        f"--execute=DROP DATABASE `{database}`; "
+        f"CREATE DATABASE `{database}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+    )
+    with sql_path.open("rb") as sql:
+        _run_mysql(database, stdin=sql)
 
 
 def _overlay_import_data(import_default: Path, staged_default: Path) -> None:
@@ -526,12 +644,12 @@ def _stage_and_swap_sites(work_default: Path, mount_root: Path, migration_id: st
         raise ImportFailure("target-default-site-missing")
     staging_root = mount_root / ".openemr-import-staging" / migration_id
     backup_root = mount_root / ".openemr-import-backup" / migration_id
-    if staging_root.exists() or backup_root.exists():
+    backup_default = backup_root / "default"
+    if staging_root.exists() or backup_default.exists():
         raise ImportFailure("migration-path-already-exists")
     staged_default = staging_root / "default"
-    backup_default = backup_root / "default"
     staging_root.mkdir(parents=True, mode=0o700)
-    backup_root.mkdir(parents=True, mode=0o700)
+    backup_root.mkdir(parents=True, exist_ok=True, mode=0o700)
     shutil.copytree(target_default, staged_default)
     _overlay_import_data(work_default, staged_default)
     _restore_target_only_files(target_default, staged_default)
@@ -543,15 +661,48 @@ def _stage_and_swap_sites(work_default: Path, mount_root: Path, migration_id: st
         raise
 
 
+def _restore_site_backup(mount_root: Path, migration_id: str) -> None:
+    target_default = mount_root / "default"
+    staging_root = mount_root / ".openemr-import-staging" / migration_id
+    backup_default = mount_root / ".openemr-import-backup" / migration_id / "default"
+    if not backup_default.is_dir():
+        return
+    failed_default = staging_root / "failed-default"
+    staging_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if failed_default.exists():
+        raise ImportFailure("site-rollback-evidence-path-exists")
+    if target_default.exists():
+        os.replace(target_default, failed_default)
+    os.replace(backup_default, target_default)
+
+
+def _attempt_automatic_rollback(
+    *,
+    mount_root: Path,
+    migration_id: str,
+    baseline_sql: Path | None,
+    database_mutation_started: bool,
+) -> bool:
+    try:
+        _restore_site_backup(mount_root, migration_id)
+        if database_mutation_started:
+            if baseline_sql is None or not baseline_sql.is_file():
+                raise ImportFailure("target-baseline-dump-missing")
+            _restore_baseline_database(baseline_sql)
+    except Exception:
+        return False
+    return True
+
+
 def _validate_import(mount_root: Path) -> None:
     database = os.environ.get("MYSQL_DATABASE", "openemr")
     tables = _run_mysql(database, "--execute=SHOW TABLES")
     if len(tables.splitlines()) < 50:
         raise ImportFailure("database-validation-failed")
-    methods = mount_root / "default" / "documents" / "logs_and_misc" / "methods"
-    key_files = (methods / "sixa", methods / "sixb")
-    if any(not path.is_file() or path.stat().st_size < 1 for path in key_files):
-        raise ImportFailure("site-validation-failed")
+    try:
+        _validate_drive_key_files(mount_root / "default")
+    except ImportFailure as exc:
+        raise ImportFailure("site-validation-failed") from exc
 
 
 def _put_status(
@@ -562,13 +713,16 @@ def _put_status(
     status: str,
     phase: str,
     error: str | None = None,
+    rollback_status: str | None = None,
 ) -> None:
+    owner, key_arn = _staging_s3_safeguards()
     payload = {
         "schema_version": 1,
         "migration_id": migration_id,
         "status": status,
         "phase": phase,
         "error": error,
+        "rollback_status": rollback_status,
     }
     # The bucket's default encryption applies the stack's customer-managed KMS
     # key; a generic aws:kms request header would select the AWS-managed S3 key.
@@ -577,6 +731,9 @@ def _put_status(
         Key=f"migrations/{migration_id}/status.json",
         Body=(json.dumps(payload, sort_keys=True) + "\n").encode("utf-8"),
         ContentType="application/json",
+        ExpectedBucketOwner=owner,
+        ServerSideEncryption="aws:kms",
+        SSEKMSKeyId=key_arn,
     )
 
 
@@ -645,6 +802,10 @@ def main() -> int:
     if not bucket or not args.recovery_verified:
         raise SystemExit("required import safeguards are missing")
     try:
+        bucket_owner, _ = _staging_s3_safeguards()
+    except ImportFailure as exc:
+        raise SystemExit(str(exc)) from exc
+    try:
         s3_client = boto3.client("s3")
     except Exception:
         print(
@@ -662,6 +823,9 @@ def main() -> int:
     work = Path("/work") / args.migration_id
     work.mkdir(mode=0o700)
     source = work / "source.tar"
+    mount_root = Path(os.environ.get("OPENEMR_SITES_MOUNT_ROOT", "/mnt/openemr-sites"))
+    baseline_sql: Path | None = None
+    database_mutation_started = False
     phase = "download"
     try:
         _put_status(
@@ -672,7 +836,12 @@ def main() -> int:
             phase=phase,
         )
         _phase(phase)
-        s3_client.download_file(bucket, args.source_key, str(source))
+        s3_client.download_file(
+            bucket,
+            args.source_key,
+            str(source),
+            ExtraArgs={"ExpectedBucketOwner": bucket_owner},
+        )
         source_sha = _sha256(source)
         if source_sha != args.source_sha256:
             raise ImportFailure("source-checksum-mismatch")
@@ -701,12 +870,22 @@ def main() -> int:
 
         phase = "target-validation"
         _phase(phase)
-        mount_root = Path(os.environ.get("OPENEMR_SITES_MOUNT_ROOT", "/mnt/openemr-sites"))
         _assert_efs_mutable(mount_root, args.migration_id)
+        _assert_fresh_efs_target(mount_root)
         _assert_empty_target()
+
+        phase = "recovery-baseline"
+        _phase(phase)
+        rollback_root = mount_root / ".openemr-import-backup" / args.migration_id
+        if rollback_root.exists():
+            raise ImportFailure("migration-path-already-exists")
+        rollback_root.mkdir(parents=True, mode=0o700)
+        baseline_sql = rollback_root / "target-baseline.sql"
+        _dump_target_database(baseline_sql)
 
         phase = "database-import"
         _phase(phase)
+        database_mutation_started = True
         _replace_database(sql, args.migration_id)
 
         phase = "site-import"
@@ -726,26 +905,18 @@ def main() -> int:
         _phase("complete")
         return 0
     except ImportFailure as exc:
-        try:
-            _put_status(
-                s3_client,
-                bucket=bucket,
+        rollback_status: str | None = None
+        published_error = str(exc)
+        if database_mutation_started:
+            rollback_succeeded = _attempt_automatic_rollback(
+                mount_root=mount_root,
                 migration_id=args.migration_id,
-                status="failed",
-                phase=phase,
-                error=str(exc),
+                baseline_sql=baseline_sql,
+                database_mutation_started=database_mutation_started,
             )
-        except Exception:
-            pass
-        print(
-            json.dumps(
-                {"phase": phase, "status": "failed", "error": str(exc)},
-                sort_keys=True,
-            ),
-            flush=True,
-        )
-        return 1
-    except Exception:
+            rollback_status = "succeeded" if rollback_succeeded else "failed"
+            if not rollback_succeeded:
+                published_error = "automatic-rollback-failed"
         try:
             _put_status(
                 s3_client,
@@ -753,7 +924,8 @@ def main() -> int:
                 migration_id=args.migration_id,
                 status="failed",
                 phase=phase,
-                error="internal-worker-error",
+                error=published_error,
+                rollback_status=rollback_status,
             )
         except Exception:
             pass
@@ -762,7 +934,46 @@ def main() -> int:
                 {
                     "phase": phase,
                     "status": "failed",
-                    "error": "internal-worker-error",
+                    "error": published_error,
+                    "rollback_status": rollback_status,
+                },
+                sort_keys=True,
+            ),
+            flush=True,
+        )
+        return 1
+    except Exception:
+        rollback_status = None
+        published_error = "internal-worker-error"
+        if database_mutation_started:
+            rollback_succeeded = _attempt_automatic_rollback(
+                mount_root=mount_root,
+                migration_id=args.migration_id,
+                baseline_sql=baseline_sql,
+                database_mutation_started=database_mutation_started,
+            )
+            rollback_status = "succeeded" if rollback_succeeded else "failed"
+            if not rollback_succeeded:
+                published_error = "automatic-rollback-failed"
+        try:
+            _put_status(
+                s3_client,
+                bucket=bucket,
+                migration_id=args.migration_id,
+                status="failed",
+                phase=phase,
+                error=published_error,
+                rollback_status=rollback_status,
+            )
+        except Exception:
+            pass
+        print(
+            json.dumps(
+                {
+                    "phase": phase,
+                    "status": "failed",
+                    "error": published_error,
+                    "rollback_status": rollback_status,
                 },
                 sort_keys=True,
             ),

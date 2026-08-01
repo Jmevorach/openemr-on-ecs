@@ -72,10 +72,16 @@ def test_dormant_import_task_is_private_arm64_and_uses_efs(template):
     assert volume["TransitEncryption"] == "ENABLED"
     assert volume["AuthorizationConfig"]["IAM"] == "DISABLED"
     assert "AccessPointId" in volume["AuthorizationConfig"]
+    import_container = next(
+        container for container in properties["ContainerDefinitions"] if container.get("Name") == "openemr-import"
+    )
+    environment_names = {item["Name"] for item in import_container["Environment"]}
+    assert "IMPORT_STAGING_BUCKET_OWNER" in environment_names
+    assert "IMPORT_STAGING_KMS_KEY_ARN" in environment_names
 
 
 def test_import_staging_bucket_and_outputs_are_guarded(template):
-    """Import staging is short-lived, private, and KMS encrypted."""
+    """Import sources expire quickly while recovery evidence remains available."""
     buckets = template.find_resources("AWS::S3::Bucket")
     import_buckets = [
         resource
@@ -89,8 +95,10 @@ def test_import_staging_bucket_and_outputs_are_guarded(template):
     assert len(import_buckets) == 1
     properties = import_buckets[0]["Properties"]
     assert properties["VersioningConfiguration"]["Status"] == "Enabled"
-    lifecycle_rule = properties["LifecycleConfiguration"]["Rules"][0]
-    assert lifecycle_rule["NoncurrentVersionExpiration"]["NoncurrentDays"] == 1
+    lifecycle_rules = {rule["Id"]: rule for rule in properties["LifecycleConfiguration"]["Rules"]}
+    assert lifecycle_rules["ExpireImportSource"]["ExpirationInDays"] == 1
+    assert lifecycle_rules["ExpireImportSource"]["NoncurrentVersionExpiration"]["NoncurrentDays"] == 1
+    assert lifecycle_rules["ExpireImportEvidence"]["ExpirationInDays"] == 30
     encryption = properties["BucketEncryption"]["ServerSideEncryptionConfiguration"]
     assert encryption[0]["ServerSideEncryptionByDefault"]["SSEAlgorithm"] == "aws:kms"
     assert properties["PublicAccessBlockConfiguration"] == {
@@ -99,6 +107,14 @@ def test_import_staging_bucket_and_outputs_are_guarded(template):
         "IgnorePublicAcls": True,
         "RestrictPublicBuckets": True,
     }
+    policies = template.find_resources("AWS::S3::BucketPolicy")
+    statement_ids = {
+        statement.get("Sid")
+        for policy in policies.values()
+        for statement in policy.get("Properties", {}).get("PolicyDocument", {}).get("Statement", [])
+    }
+    assert "DenyImportObjectsWithoutExplicitKmsEncryption" in statement_ids
+    assert "DenyImportObjectsEncryptedWithAnotherKey" in statement_ids
     for output in (
         "DatabaseClusterArn",
         "OpenEMRImportSecurityGroupId",
@@ -156,6 +172,11 @@ def test_live_e2e_context_is_tagged_owned_and_database_is_disposable(minimal_con
     assert log_groups
     assert all(resource["DeletionPolicy"] == "Delete" for resource in log_groups)
     assert all(resource["UpdateReplacePolicy"] == "Delete" for resource in log_groups)
+    parameters = [
+        resource for resource in synthesized["Resources"].values() if resource["Type"] == "AWS::SSM::Parameter"
+    ]
+    assert parameters
+    assert all(resource["Properties"]["Name"].endswith("_e2eunit1234") for resource in parameters)
     assert synthesized["Outputs"]["LiveE2ERunId"]["Value"] == run_id
     tags = clusters[0]["Properties"]["Tags"]
     assert {"Key": "LiveE2ERunId", "Value": run_id} in tags
