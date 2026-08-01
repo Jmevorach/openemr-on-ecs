@@ -76,7 +76,8 @@ def atomic_write(path: Path, content: str) -> None:
     for parent in [path.parent, path.parent.parent]:
         if parent.exists():
             try:
-                os.chmod(parent, 0o755)  # nosec B103 - Apache needs 755 to traverse EFS directories
+                # Apache needs execute permission to traverse these EFS directories.
+                os.chmod(parent, 0o755)  # nosec B103
                 os.chown(parent, _APACHE_UID, _APACHE_GID)
             except OSError:
                 pass

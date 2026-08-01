@@ -173,7 +173,7 @@ Options:
 2. **Get restore metadata:**
    ```bash
    RECOVERY_POINT_ARN="arn:aws:backup:..."
-   
+
    aws backup get-recovery-point-restore-metadata \
        --backup-vault-name "OpenemrEcsStack-vault-xxxxxx" \
        --recovery-point-arn "$RECOVERY_POINT_ARN" \
@@ -196,7 +196,7 @@ Options:
 4. **Monitor restore progress:**
    ```bash
    RESTORE_JOB_ID="..."
-   
+
    aws backup describe-restore-job \
        --restore-job-id "$RESTORE_JOB_ID" \
        --region us-west-2
@@ -218,7 +218,7 @@ EFS restores can target either a new file system or an existing file system. Whe
    ```bash
    RECOVERY_POINT_ARN="arn:aws:backup:..."
    FILE_SYSTEM_ID="fs-xxxxx"  # Target file system ID
-   
+
    aws backup start-restore-job \
        --recovery-point-arn "$RECOVERY_POINT_ARN" \
        --iam-role-arn "arn:aws:iam::ACCOUNT:role/service-role/AWSBackupDefaultServiceRole" \
@@ -306,7 +306,7 @@ EFS restores can target either a new file system or an existing file system. Whe
        --query "Stacks[0].Outputs[?OutputKey=='EFSSitesFileSystemId'].OutputValue" \
        --output text)
    ./scripts/restore-from-backup.sh EFS "$SITES_EFS"
-   
+
    # Restore SSL file system
    SSL_EFS=$(aws cloudformation describe-stacks \
        --stack-name OpenemrEcsStack \

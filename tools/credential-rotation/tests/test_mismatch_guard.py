@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Any, cast
 from unittest.mock import patch
 
 from credential_rotation.rotate import RotationContext, RotationOrchestrator
@@ -64,12 +65,27 @@ def test_sqlconf_matches_standby_auto_reconciles(tmp_path: Path):
     )
 
     orchestrator = RotationOrchestrator(ctx)
-    orchestrator.secrets = _FakeSecrets(
-        rds_payload={
-            "active_slot": "A",
-            "A": {"host": "db-a", "port": "3306", "username": "openemr_a", "password": "pass-a", "dbname": "openemr"},
-            "B": {"host": "db-b", "port": "3306", "username": "openemr_b", "password": "pass-b", "dbname": "openemr"},
-        },
+    orchestrator.secrets = cast(
+        Any,
+        _FakeSecrets(
+            rds_payload={
+                "active_slot": "A",
+                "A": {
+                    "host": "db-a",
+                    "port": "3306",
+                    "username": "openemr_a",
+                    "password": "pass-a",
+                    "dbname": "openemr",
+                },
+                "B": {
+                    "host": "db-b",
+                    "port": "3306",
+                    "username": "openemr_b",
+                    "password": "pass-b",
+                    "dbname": "openemr",
+                },
+            },
+        ),
     )
 
     orchestrator.rotate()
@@ -108,25 +124,28 @@ def test_sqlconf_matches_neither_slot_bootstraps(mock_health, mock_validate_rds,
     )
 
     orchestrator = RotationOrchestrator(ctx)
-    orchestrator.secrets = _FakeSecrets(
-        rds_payload={
-            "active_slot": "A",
-            "A": {
-                "host": "db-a",
-                "port": "3306",
-                "username": "openemr_a",
-                "password": "placeholder",
-                "dbname": "openemr",
+    orchestrator.secrets = cast(
+        Any,
+        _FakeSecrets(
+            rds_payload={
+                "active_slot": "A",
+                "A": {
+                    "host": "db-a",
+                    "port": "3306",
+                    "username": "openemr_a",
+                    "password": "placeholder",
+                    "dbname": "openemr",
+                },
+                "B": {
+                    "host": "db-b",
+                    "port": "3306",
+                    "username": "openemr_b",
+                    "password": "placeholder",
+                    "dbname": "openemr",
+                },
             },
-            "B": {
-                "host": "db-b",
-                "port": "3306",
-                "username": "openemr_b",
-                "password": "placeholder",
-                "dbname": "openemr",
-            },
-        },
+        ),
     )
-    orchestrator._upsert_openemr_db_user = lambda _: None
 
-    orchestrator.rotate()
+    with patch.object(orchestrator, "_upsert_openemr_db_user"):
+        orchestrator.rotate()

@@ -314,4 +314,3 @@ vpc = network.create_vpc()
 - [README.md](../README.md) - Project overview
 - [ARCHITECTURE.md](../ARCHITECTURE.md) - Architecture details
 - [DETAILS.md](../DETAILS.md) - Configuration details
-

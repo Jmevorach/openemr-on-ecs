@@ -27,7 +27,7 @@ These functions are automatically deployed as part of the CDK stack and do not r
 
 **Purpose**: Generates self-signed SSL certificates for internal ALB-to-container communication.
 
-**Trigger**: 
+**Trigger**:
 - One-time execution during stack creation
 - Scheduled execution for certificate rotation (every 2 days by default)
 
@@ -153,11 +153,11 @@ Each function is defined in `lambda_functions.py`:
 def function_name(event, context):
     """
     Function description.
-    
+
     Args:
         event: Lambda event dictionary
         context: Lambda context object
-        
+
     Returns:
         Response dictionary
     """
@@ -257,4 +257,3 @@ aws logs tail /aws/lambda/OpenemrEcsStack-FunctionName --follow
 - [openemr_ecs/security.py](../openemr_ecs/security.py) - Security-related Lambda usage
 - [openemr_ecs/compute.py](../openemr_ecs/compute.py) - Compute-related Lambda usage
 - [AWS Lambda Documentation](https://docs.aws.amazon.com/lambda/) - Official AWS Lambda documentation
-

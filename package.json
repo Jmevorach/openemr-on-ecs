@@ -1,0 +1,12 @@
+{
+  "name": "openemr-on-ecs-maintenance",
+  "private": true,
+  "devDependencies": {
+    "aws-cdk": "2.1134.0",
+    "cdk-assets": "4.7.0",
+    "cdk-dia": "0.12.3"
+  },
+  "engines": {
+    "node": ">=24 <25"
+  }
+}

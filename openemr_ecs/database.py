@@ -3,6 +3,7 @@
 from typing import Optional
 
 from aws_cdk import (
+    RemovalPolicy,
     SecretValue,
     Stack,
 )
@@ -14,6 +15,7 @@ from aws_cdk import aws_secretsmanager as secretsmanager
 from aws_cdk import aws_ssm as ssm
 from constructs import Construct
 
+from .kms_keys import KmsKeys
 from .nag_suppressions import acknowledge_findings, suppress_vpc_endpoint_security_group_findings
 from .utils import get_resource_suffix, is_true
 
@@ -29,13 +31,14 @@ class DatabaseComponents:
     - Optional Bedrock integration for ML
     """
 
-    def __init__(self, scope: Construct):
+    def __init__(self, scope: Construct, kms_keys: KmsKeys):
         """Initialize database components.
 
         Args:
             scope: The CDK construct scope
         """
         self.scope = scope
+        self.kms_keys = kms_keys
         self.db_instance: Optional[rds.DatabaseCluster] = None
         self.valkey_cluster: Optional[elasticache.CfnServerlessCache] = None
         self.db_secret: Optional[secretsmanager.Secret] = None
@@ -68,7 +71,7 @@ class DatabaseComponents:
             The created database cluster
         """
         # Create database secret with KMS encryption
-        kms_key = self.scope.kms_keys.central_key
+        kms_key = self.kms_keys.central_key
 
         self.db_secret = secretsmanager.Secret(
             self.scope,
@@ -166,10 +169,16 @@ class DatabaseComponents:
             parameters=parameters,
         )
 
+        # Live E2E stacks are disposable by design. They disable deletion
+        # protection and final snapshots so teardown does not leave billable
+        # database snapshots. Normal deployments retain the production policy.
+        live_e2e = bool(context.get("live_e2e_run_id"))
+
         # Deletion protection: on by default, but can be temporarily disabled (e.g., for cdk destroy) via context flag
         deletion_protection_enabled = is_true(context.get("rds_deletion_protection", "true"))
-        if is_true(context.get("disable_rds_deletion_protection_on_destroy", "false")):
+        if live_e2e or is_true(context.get("disable_rds_deletion_protection_on_destroy", "false")):
             deletion_protection_enabled = False
+        removal_policy = RemovalPolicy.DESTROY if live_e2e else RemovalPolicy.SNAPSHOT
 
         # Get resource suffix for consistent naming
         suffix = get_resource_suffix(context)
@@ -212,6 +221,7 @@ class DatabaseComponents:
                 vpc_subnets=ec2.SubnetSelection(subnet_type=ec2.SubnetType.PRIVATE_WITH_EGRESS),
                 vpc=vpc,
                 deletion_protection=deletion_protection_enabled,
+                removal_policy=removal_policy,
             )
         else:
             self.db_instance = rds.DatabaseCluster(
@@ -245,6 +255,7 @@ class DatabaseComponents:
                 vpc_subnets=ec2.SubnetSelection(subnet_type=ec2.SubnetType.PRIVATE_WITH_EGRESS),
                 vpc=vpc,
                 deletion_protection=deletion_protection_enabled,
+                removal_policy=removal_policy,
             )
 
         # Add RDS acknowledgments for intentional configurations
@@ -429,7 +440,7 @@ class DatabaseComponents:
         if not self.db_instance:
             raise ValueError("Database cluster must be created before slot secrets")
 
-        kms_key = self.scope.kms_keys.central_key
+        kms_key = self.kms_keys.central_key
 
         self.rds_slot_secret = secretsmanager.Secret(
             self.scope,

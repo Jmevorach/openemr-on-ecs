@@ -6,7 +6,7 @@
 
 [![License: MIT](https://img.shields.io/github/license/openemr/openemr-on-ecs?style=flat&color=yellow)](LICENSE)
 [![Version](https://img.shields.io/github/v/release/openemr/openemr-on-ecs?style=flat&label=version&color=blue)](https://github.com/openemr/openemr-on-ecs/releases)
-[![OpenEMR](https://img.shields.io/badge/OpenEMR-v8.1.0-2ea44f?style=flat)](https://hub.docker.com/r/openemr/openemr/tags)
+[![OpenEMR](https://img.shields.io/badge/OpenEMR-v8.2.0-2ea44f?style=flat)](https://hub.docker.com/r/openemr/openemr/tags)
 
 <table>
 <tr><td><b>Tests</b></td><td>
@@ -34,7 +34,7 @@
 </td></tr>
 <tr><td><b>Stack</b></td><td>
   <img src="https://img.shields.io/badge/Python-3.14-3776AB?style=flat&logo=python&logoColor=white" alt="Python">
-  <img src="https://img.shields.io/badge/Go-1.25-00ADD8?style=flat&logo=go&logoColor=white" alt="Go">
+  <img src="https://img.shields.io/badge/Go-1.26-00ADD8?style=flat&logo=go&logoColor=white" alt="Go">
   <img src="https://img.shields.io/badge/AWS_CDK-v2-FF9900?style=flat&logo=amazonaws&logoColor=white" alt="AWS CDK">
   <img src="https://img.shields.io/badge/Fargate-serverless-FF9900?style=flat&logo=awsfargate&logoColor=white" alt="Fargate">
   <img src="https://img.shields.io/badge/Aurora-MySQL-4479A1?style=flat&logo=mysql&logoColor=white" alt="Aurora MySQL">
@@ -64,12 +64,13 @@
 ```bash
 # Install dependencies
 pip install -r requirements.txt
+npm ci
 
 # Configure settings in cdk.json (see Configuration section below)
 # IMPORTANT: A certificate is required. Set either route53_domain or certificate_arn.
 
 # Deploy (Duration: ~40 min)
-cdk deploy
+node_modules/.bin/cdk deploy
 ```
 
 **What you get:**
@@ -81,7 +82,7 @@ cdk deploy
 
 ```bash
 # When you're done
-cdk destroy
+node_modules/.bin/cdk destroy
 ```
 
 ---
@@ -110,7 +111,7 @@ Transform your healthcare facility with enterprise-grade EHR system at a fractio
 - **Includes**: HIPAA-eligible architecture, automated scaling, multi-zone availability, and 7-year backup retention
 - **Zero infrastructure management required**
 
-## Architecture 
+## Architecture
 ![OpenEMR AWS Fargate Architecture](./diagrams/architecture.png)
 
 ### Component Relationships
@@ -145,7 +146,7 @@ Transform your healthcare facility with enterprise-grade EHR system at a fractio
 **Network Layer**
 - **Application Load Balancer**: SSL termination and traffic distribution across availability zones
 - **Private Subnets**: Isolated network segments for database and cache resources
-- **NAT Gateways**: Secure outbound internet access for private resources 
+- **NAT Gateways**: Secure outbound internet access for private resources
 
 ## What You Get
 - A fully managed, HIPAA-eligible OpenEMR installation
@@ -181,7 +182,7 @@ Key Assumptions:
 - Elasticache Serverless: $0.0084/hour = 730h * $0.0088 = **$6.45/month**
 - EFS Costs: Minimum billing is 1GB per mount (2 mounts)
   - Total: 2GB × $0.08 per GB-month = **$0.16/month**
-- RDS Aurora Serverless V2: 
+- RDS Aurora Serverless V2:
   - **Base (always-on)**: 730 hours × 0.5 ACU × $0.12 = $43.80/month - Minimum capacity (ensures instant connections)
   - **Peak scaling**: 160 hours × 1.5 ACU × $0.12 = $28.80/month - Additional capacity during peak hours (scales from 0.5 to 2 ACU)
   - **Storage**: 10GB × $0.10 per GB = $1.00/month
@@ -214,8 +215,9 @@ Before starting, you'll need:
 1. **An AWS Account** - Sign up at https://aws.amazon.com/ (credit card required, but won't be charged until you use resources)
 2. **AWS CLI** - Install from https://aws.amazon.com/cli/ (then run `aws configure` with your AWS credentials)
 3. **Python 3.14** - Install from https://www.python.org/downloads/ (check "Add to PATH" during installation)
-4. **Node.js** - Install from https://nodejs.org/ (download the LTS version)
-5. **AWS CDK** - Install via `npm install -g aws-cdk` (requires Node.js)
+4. **Node.js 24** - Install from https://nodejs.org/
+5. **Pinned Node tools** - Run `npm ci` in this repository; do not install a
+   separate global CDK CLI
 
 > **Not sure how to install these?** See our [**Getting Started Guide**](GETTING-STARTED.md) which includes step-by-step installation instructions for each tool.
 
@@ -229,17 +231,20 @@ Before starting, you'll need:
    ```bash
    # Create a Python virtual environment (isolates this project's dependencies)
    python3 -m venv .venv
-   
+
    # Activate the virtual environment
    # On Mac/Linux:
    source .venv/bin/activate
    # On Windows:
    .venv\Scripts\activate
-   
+
    # Install required Python packages
    pip install -r requirements.txt
+
+   # Install the repository-pinned CDK CLI and other Node tools
+   npm ci
    ```
-   
+
    **What is a virtual environment?** It's like a separate workspace for this project that keeps its dependencies isolated from other projects. You'll need to activate it (`source .venv/bin/activate`) each time you open a new terminal.
 
 2. **Configure Access and Certificate**
@@ -250,9 +255,9 @@ Before starting, you'll need:
    - **IP Access:** Find `security_group_ip_range_ipv4`
      - **For testing:** Leave as `"auto"` (automatically allows your current IP) or `"0.0.0.0/0"` (allows access from anywhere - not secure but convenient)
      - **For better security:** Change to your IP address, e.g., `"203.0.113.131/32"` (replace with your actual IP - find it at https://whatismyipaddress.com/)
-   
+
    **Understanding the format:** `203.0.113.131/32` means "only allow this specific IP address". `0.0.0.0/0` means "allow any IP address". `"auto"` automatically detects and allows your current public IP.
-   
+
    *For advanced configuration options, see [DETAILS.md Customizing Architecture Attributes](./DETAILS.md#customizing-architecture-attributes) and [HTTPS Setup Guide](./DETAILS.md#enabling-https-for-client-to-load-balancer-communication)*
 
 3. **Validate Setup (Recommended)**
@@ -265,17 +270,17 @@ Before starting, you'll need:
 4. **Bootstrap CDK (First Time Only)**
    ```bash
    # One-time setup - tells AWS about CDK
-   cdk bootstrap
+   node_modules/.bin/cdk bootstrap
    ```
 
-5. **Deploy (~40 minutes)** 
+5. **Deploy (~40 minutes)**
    ```bash
    # Deploy OpenEMR to AWS
-   cdk deploy
+   node_modules/.bin/cdk deploy
    ```
-   
+
    CDK will show what it's creating and ask for confirmation. Type `y` to proceed. The deployment takes about 40 minutes - AWS is creating databases, networking, and other resources.
-   
+
 ## Directory Overview
 
 ```
@@ -308,7 +313,7 @@ Before starting, you'll need:
 │   └── docker-compose.test-ssl.yml          # SSL test configuration
 ├── scripts/                                 # Helper scripts
 │   ├── validate-deployment-prerequisites.sh # Pre-deployment validation
-│   ├── stress-test.sh                       # CDK stack stress testing
+│   ├── stress-test.sh                       # Repeated CDK synthesis checks
 │   ├── test-cdk-synthesis.py                # Configuration matrix testing
 │   ├── load-test.sh                         # Load testing for deployed application
 │   ├── create-backup.sh                     # Create on-demand backups
@@ -323,7 +328,12 @@ Before starting, you'll need:
 │   └── README.md                            # Scripts documentation
 ├── tests/                                   # Unit tests for CDK stack
 ├── tools/
-│   └── credential-rotation/                 # Dual-slot credential rotation tool
+│   ├── credential-rotation/                 # Dual-slot credential rotation tool
+│   ├── knowledge_mcp/                       # Read-only repository knowledge server
+│   ├── live_e2e/                            # Approval-gated live deployment runner
+│   ├── openemr_import/                      # Guarded import planner and orchestrator
+│   ├── openemr-import-worker/               # Isolated import task image
+│   └── version_audit/                       # Local dependency/platform audit
 ├── diagrams/                                # Architecture diagrams (generated from CDK)
 │   ├── generate.py                          # AWS PDK diagram generation script
 │   ├── architecture.png                     # Compact architecture diagram
@@ -333,6 +343,9 @@ Before starting, you'll need:
 ├── GETTING-STARTED.md                       # Beginner-friendly setup guide
 ├── README-TESTING.md                        # Local testing guide
 ├── BACKUP-RESTORE-GUIDE.md                  # Backup and restore procedures
+├── IMPORTING-OPENEMR.md                     # Guarded fresh-target import workflow
+├── LIVE-E2E.md                               # Approval-gated real deployment test
+├── MAINTAINERS.md                            # Audit, validation, MCP, and operations index
 ├── DETAILS.md                               # Deep configuration details
 ├── ARCHITECTURE.md                          # Architecture deep dive
 ├── TROUBLESHOOTING.md                       # Common issues/solutions
@@ -350,7 +363,7 @@ Before starting, you'll need:
 ## Clean Up
 When you have completed your testing you can clean up the deployed environment by running:
 ```bash
-   cdk destroy
+   node_modules/.bin/cdk destroy
 ```
 Manual cleanup items:
 - AWS Backup Vault
@@ -383,7 +396,7 @@ This script automatically detects the project root by searching for `cdk.json`, 
 
 ### CDK Stack Stress Testing
 
-**`scripts/stress-test.sh`** - Tests CDK stack synthesis and optionally deployment/destruction with various configurations.
+**`scripts/stress-test.sh`** - Tests CDK stack synthesis with multiple configurations.
 
 **Synthesis Testing (Default):**
 ```bash
@@ -391,12 +404,7 @@ This script automatically detects the project root by searching for `cdk.json`, 
 ```
 Tests stack synthesis with minimal, standard, and full-featured configurations without actually deploying.
 
-**Full Deployment Testing:**
-```bash
-export DEPLOY_ACTUAL=true
-./scripts/stress-test.sh
-```
-⚠️ **Warning:** This will actually deploy and destroy stacks, which takes ~40 minutes per configuration. Only use this if you want to stress test actual deployments.
+The stress script is synthesis-only and cannot deploy or destroy AWS resources. The separate [guarded live E2E guide](LIVE-E2E.md) documents the approval-gated real deployment test.
 
 ### Load Testing
 
@@ -430,7 +438,7 @@ Test all configuration combinations to ensure features work correctly:
 
 **Python Test Script (Recommended):**
 ```bash
-# Test all 8 configurations (minimal, standard, full-featured, with/without monitoring, etc.)
+# Test all 16 configurations (features, safeguards, sizing, and combined options)
 python3 scripts/test-cdk-synthesis.py
 
 # Verbose output with detailed errors
@@ -442,13 +450,11 @@ python3 scripts/test-cdk-synthesis.py --fail-fast
 
 **Bash Stress Test:**
 ```bash
-# Test 6 core configurations (synthesis only - fast)
-./scripts/stress-test.sh
-
-# Test actual deployment and destruction (slow - ~40 min per config)
-export DEPLOY_ACTUAL=true
+# Test 6 core configurations (synthesis only)
 ./scripts/stress-test.sh
 ```
+
+Real deployment testing is available only through the approval-gated [live E2E runner](LIVE-E2E.md).
 
 **What's tested:**
 - Minimal configuration (core features only)
@@ -501,7 +507,7 @@ See [scripts/backup-tui/README.md](scripts/backup-tui/README.md) for full docume
 
 The project includes comprehensive CI/CD automation:
 
-- **CI Validation (`.github/workflows/ci.yml`)** 
+- **CI Validation (`.github/workflows/ci.yml`)**
   - Runs on every PR and push to `main`/`develop`
   - Unit tests with pytest
   - **Configuration matrix testing** - Tests 8 configuration combinations
@@ -520,12 +526,12 @@ The project includes comprehensive CI/CD automation:
   - Can be triggered manually via `workflow_dispatch`
   - Uploads synthesis logs on failure for debugging
 
-- **Monthly Version Check (`.github/workflows/monthly-version-check.yml`)** 
+- **Monthly Version Check (`.github/workflows/monthly-version-check.yml`)**
   - Scheduled on the first of each month (and manually runnable)
   - Scans pinned Python packages, Aurora engine versions, EMR Serverless releases, Lambda runtimes, and container tags
   - Creates an issue when updates are detected
 
-- **Manual Release (`.github/workflows/manual-release.yml`)** 
+- **Manual Release (`.github/workflows/manual-release.yml`)**
   - Guided `workflow_dispatch` release process
   - Semantic version bumps
   - Tag/release creation with optional dry run
@@ -534,8 +540,12 @@ All workflows use mocked AWS credentials with `cdk synth --no-lookups` to keep t
 
 **Testing Tools:**
 - `scripts/test-cdk-synthesis.py` - Python-based comprehensive configuration testing
-- `scripts/stress-test.sh` - Bash-based stress testing with optional deployment
+- `scripts/stress-test.sh` - Bash-based synthesis stress testing
 - `scripts/validate-deployment-prerequisites.sh` - Pre-flight validation
+
+See the [Maintainer Guide](MAINTAINERS.md) for the local version audit, broad
+validation commands, read-only knowledge MCP server, generated artifacts, and
+safety boundaries for AWS-aware tools.
 
 ## Additional Resources
 
@@ -544,6 +554,9 @@ All workflows use mocked AWS credentials with `cdk synth --no-lookups` to keep t
 - [Troubleshooting Guide](TROUBLESHOOTING.md) - Common issues and solutions including database connection problems, container health checks, SSL/TLS issues, and deployment failures
 - [Detailed Configuration Guide](DETAILS.md) - Complete configuration options and advanced features for customizing your deployment
 - [Local Testing Guide](README-TESTING.md) - Test the container startup locally using Docker Compose before deploying to AWS
+- [Maintainer Guide](MAINTAINERS.md) - Local audit, validation, knowledge MCP, import, and E2E workflows
+- [Guarded Live E2E Guide](LIVE-E2E.md) - Approval-gated real deployment, validation, teardown, and timing
+- [Deployment Timing Report](docs/deployment-timing.md) - Sanitized measurements from explicitly approved live E2E runs
 
 ### Helper Scripts & Tools
 - [Scripts Documentation](scripts/README.md) - Complete guide to all helper scripts including validation, stress testing, configuration testing, local testing, and database access tools
@@ -563,6 +576,7 @@ All workflows use mocked AWS credentials with `cdk synth --no-lookups` to keep t
 - [REST and FHIR APIs](DETAILS.md#rest-and-fhir-apis) - Step-by-step guide to enabling and using OpenEMR's REST and FHIR APIs for integration
 - [AWS Backup Configuration](DETAILS.md#how-aws-backup-is-used-in-this-architecture) - Automated backup strategy with daily, weekly, and monthly backups with 7-year retention
 - [Backup and Restore Guide](BACKUP-RESTORE-GUIDE.md) - Comprehensive guide for restoring from AWS Backup recovery points
+- [Importing an Existing OpenEMR Installation](IMPORTING-OPENEMR.md) - Offline inspection and guarded fresh-target import workflow
 - [Database Access via ECS Exec](DETAILS.md#using-ecs-exec) - Secure database access using ECS Exec and port forwarding for remote database management
 - [Aurora ML for AWS Bedrock](DETAILS.md#aurora-ml-for-aws-bedrock) - Integration guide for using AWS Bedrock foundation models directly from MySQL queries
 - [AWS Global Accelerator](DETAILS.md#using-aws-global-accelerator) - Performance optimization for global deployments using AWS Global Accelerator

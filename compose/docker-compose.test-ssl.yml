@@ -396,4 +396,3 @@ volumes:
   mysql-ssl-certs:
   redis-test-ssl-data:
   redis-ssl-certs:
-

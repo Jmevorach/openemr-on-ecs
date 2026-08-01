@@ -18,6 +18,7 @@ from aws_cdk import aws_logs as logs
 from aws_cdk import aws_s3 as s3
 from constructs import Construct
 
+from .kms_keys import KmsKeys
 from .nag_suppressions import acknowledge_findings
 from .utils import get_resource_suffix
 
@@ -32,13 +33,14 @@ class StorageComponents:
     - CloudTrail logging (optional)
     """
 
-    def __init__(self, scope: Construct):
+    def __init__(self, scope: Construct, kms_keys: KmsKeys):
         """Initialize storage components.
 
         Args:
             scope: The CDK construct scope
         """
         self.scope = scope
+        self.kms_keys = kms_keys
         self.elb_log_bucket: Optional[s3.Bucket] = None
         self.cloudtrail_log_bucket: Optional[s3.Bucket] = None
         self.cloudtrail_kms_key: Optional[kms.Key] = None
@@ -48,6 +50,7 @@ class StorageComponents:
         self.efs_volume_configuration_for_sites_folder: Optional[ecs.EfsVolumeConfiguration] = None
         self.efs_volume_configuration_for_ssl_folder: Optional[ecs.EfsVolumeConfiguration] = None
         self.backup_vault: Optional[backup.BackupVault] = None
+        self.import_staging_bucket: Optional[s3.Bucket] = None
 
     def create_elb_log_bucket(self) -> s3.Bucket:
         """Create S3 bucket for Application Load Balancer access logs.
@@ -149,6 +152,80 @@ class StorageComponents:
 
         return self.elb_log_bucket
 
+    def create_import_staging_bucket(
+        self,
+        access_log_bucket: s3.IBucket,
+        encryption_key: kms.IKey,
+    ) -> s3.Bucket:
+        """Create a short-lived, private KMS-encrypted import staging bucket."""
+
+        self.import_staging_bucket = s3.Bucket(
+            self.scope,
+            "OpenEMRImportStagingBucket",
+            auto_delete_objects=True,
+            removal_policy=RemovalPolicy.DESTROY,
+            block_public_access=s3.BlockPublicAccess.BLOCK_ALL,
+            encryption=s3.BucketEncryption.KMS,
+            encryption_key=encryption_key,
+            bucket_key_enabled=True,
+            enforce_ssl=True,
+            versioned=True,
+            server_access_logs_bucket=access_log_bucket,
+            server_access_logs_prefix="import-staging-access/",
+            lifecycle_rules=[
+                s3.LifecycleRule(
+                    id="ExpireImportStaging",
+                    enabled=True,
+                    prefix="migrations/",
+                    expiration=Duration.days(1),
+                    noncurrent_version_expiration=Duration.days(1),
+                    abort_incomplete_multipart_upload_after=Duration.days(1),
+                ),
+                s3.LifecycleRule(
+                    id="CleanImportLockHistory",
+                    enabled=True,
+                    prefix="locks/",
+                    noncurrent_version_expiration=Duration.days(30),
+                    expired_object_delete_marker=True,
+                ),
+            ],
+        )
+        acknowledge_findings(
+            self.import_staging_bucket,
+            [
+                {
+                    "id": "HIPAA.Security-S3BucketReplicationEnabled",
+                    "reason": (
+                        "Import objects are temporary, encrypted staging data with a one-day "
+                        "lifecycle; durable copies remain in the source and verified backups"
+                    ),
+                }
+            ],
+        )
+        return self.import_staging_bucket
+
+    def create_import_efs_volume_configuration(
+        self,
+        file_system: efs.FileSystem,
+    ) -> ecs.EfsVolumeConfiguration:
+        """Create an import-only access point that can atomically swap site data."""
+
+        access_point = efs.AccessPoint(
+            self.scope,
+            "OpenEMRImportSitesAccessPoint",
+            file_system=file_system,
+            path="/",
+            posix_user=efs.PosixUser(uid="0", gid="0"),
+        )
+        return ecs.EfsVolumeConfiguration(
+            file_system_id=file_system.file_system_id,
+            transit_encryption="ENABLED",
+            authorization_config=ecs.AuthorizationConfig(
+                access_point_id=access_point.access_point_id,
+                iam="DISABLED",
+            ),
+        )
+
     def create_cloudtrail_logging(self, region: str) -> tuple:
         """Create CloudTrail logging infrastructure (optional).
 
@@ -247,7 +324,7 @@ class StorageComponents:
         )
 
         # Get KMS key for CloudWatch Logs encryption
-        logs_kms_key = self.scope.kms_keys.central_key
+        logs_kms_key = self.kms_keys.central_key
 
         # Create CloudTrail trail with CloudWatch Logs
         self.trail = cloudtrail.Trail(
@@ -263,6 +340,11 @@ class StorageComponents:
                 "CloudTrailLogGroup",
                 encryption_key=logs_kms_key,
                 retention=logs.RetentionDays.NINE_YEARS,
+                removal_policy=(
+                    RemovalPolicy.DESTROY
+                    if self.scope.node.try_get_context("live_e2e_run_id")
+                    else RemovalPolicy.RETAIN
+                ),
             ),
             management_events=cloudtrail.ReadWriteType.ALL,
         )

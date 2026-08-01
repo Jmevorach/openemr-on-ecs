@@ -16,6 +16,7 @@ __pycache__/
 venv/
 ENV/
 env/
+node_modules/
 
 # IDE
 .vscode/
@@ -31,7 +32,15 @@ Thumbs.db
 # Testing
 /tmp/
 *.log
+.coverage
+htmlcov/
+.pytest_cache/
 mysql-ssl-ca/
+.live-e2e/
+.openemr-import/
+e2e-results/*
+!e2e-results/history.json
+migration-bundles/
 
 # Source Code
 openemr-master

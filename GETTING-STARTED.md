@@ -130,20 +130,20 @@ You should see something like `aws-cli/2.13.0`.
 **What it is:** This is AWS's tool for building and deploying cloud applications. It's like a blueprint that tells AWS how to set everything up.
 
 **How to install:**
-Open a terminal and type:
+The repository pins a compatible CDK CLI. From the cloned repository, run:
 ```bash
-npm install -g aws-cdk
+npm ci
 ```
 
 **Verify it worked:**
 ```bash
-cdk --version
+node_modules/.bin/cdk --version
 ```
-You should see something like `2.100.0` or higher.
+This prints the exact version selected by `package-lock.json`.
 
 **Troubleshooting:**
 - If you get "command not found", Node.js may not be installed correctly
-- On some systems, you may need to use `sudo` before the command (Mac/Linux)
+- Rerun `npm ci`; do not use `sudo` or install a mutable global CDK version
 
 ---
 
@@ -205,7 +205,7 @@ You should see your AWS account ID and user information.
    ```bash
    cd /path/to/openemr-on-ecs
    ```
-   
+
    **Example:**
    ```bash
    cd ~/Documents/openemr-on-ecs
@@ -346,7 +346,7 @@ If you see any errors, fix them before proceeding.
 **What is this?** CDK needs some tools stored in your AWS account before it can deploy anything. This is a one-time setup.
 
 ```bash
-cdk bootstrap
+node_modules/.bin/cdk bootstrap
 ```
 
 You'll see output showing it's creating resources in AWS. This takes about 2-3 minutes.
@@ -360,7 +360,7 @@ You'll see output showing it's creating resources in AWS. This takes about 2-3 m
 Now the exciting part - deploying your application!
 
 ```bash
-cdk deploy
+node_modules/.bin/cdk deploy
 ```
 
 **What happens:**
@@ -476,7 +476,7 @@ The database and other resources continue running, so you'll pay even when not u
 
 ### "How do I update OpenEMR?"
 
-Just run `cdk deploy` again - it will update to the latest configuration.
+Run `node_modules/.bin/cdk deploy` again; it will update to the latest configuration.
 
 ### "What if I forget my password?"
 
@@ -493,7 +493,7 @@ Yes! The application can handle multiple users. Just share the URL (and make sur
 **⚠️ Warning:** This deletes ALL resources and data. Make sure you have backups!
 
 ```bash
-cdk destroy
+node_modules/.bin/cdk destroy
 ```
 
 Type `y` when asked to confirm.
@@ -526,7 +526,7 @@ Type `y` when asked to confirm.
 |---------|----------|
 | "python: command not found" | Install Python and check "Add to PATH" |
 | "aws: command not found" | Install AWS CLI |
-| "cdk: command not found" | Run `npm install -g aws-cdk` |
+| "CDK executable not found" | Run `npm ci` in the repository |
 | "Access Denied" in AWS | Check your AWS credentials with `aws configure` |
 | Deployment fails | Run `./scripts/validate-deployment-prerequisites.sh` |
 | Can't access OpenEMR URL | Check security_group_ip_range_ipv4 in cdk.json includes your IP |
@@ -535,4 +535,3 @@ Type `y` when asked to confirm.
 ---
 
 **Remember:** Take your time, read error messages carefully, and don't hesitate to ask for help in the GitHub issues or OpenEMR community!
-

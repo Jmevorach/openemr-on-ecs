@@ -8,6 +8,7 @@ from aws_cdk import (
     CustomResource,
     Duration,
     Stack,
+    Tags,
 )
 from aws_cdk import aws_certificatemanager as acm
 from aws_cdk import aws_ec2 as ec2
@@ -52,6 +53,8 @@ class OpenemrEcsStack(Stack):
             "certificate_arn",
             "email_forwarding_address",
             "route53_domain",
+            "route53_hosted_zone_id",
+            "openemr_import_target",
             "openemr_service_fargate_minimum_capacity",
             "openemr_service_fargate_maximum_capacity",
             "openemr_service_fargate_cpu",
@@ -80,9 +83,19 @@ class OpenemrEcsStack(Stack):
             "enable_monitoring_alarms",
             "monitoring_email",
             "deployment_notification_email",
+            "live_e2e_run_id",
+            "live_e2e_availability_zones",
         ]
 
         context = {key: self.node.try_get_context(key) for key in context_keys}
+
+        # The local live-E2E runner supplies a unique run ID. Tags make every
+        # taggable residual discoverable after teardown without changing normal
+        # production behavior.
+        live_e2e_run_id = context.get("live_e2e_run_id")
+        if live_e2e_run_id:
+            Tags.of(self).add("LiveE2ERunId", str(live_e2e_run_id))
+            Tags.of(self).add("Purpose", "OpenEMRLiveE2E")
 
         # Validate context values before proceeding with deployment
         # This catches configuration errors early and prevents deployment failures
@@ -123,17 +136,17 @@ class OpenemrEcsStack(Stack):
         kms_keys = KmsKeys(self, self.account, self.region)
         self.kms_keys = kms_keys
 
-        network = NetworkComponents(self, self.cidr)
-        storage = StorageComponents(self)
-        database = DatabaseComponents(self)
-        compute = ComputeComponents(self)
-        security = SecurityComponents(self)
+        network = NetworkComponents(self, self.cidr, kms_keys)
+        storage = StorageComponents(self, kms_keys)
+        database = DatabaseComponents(self, kms_keys)
+        compute = ComputeComponents(self, kms_keys)
+        security = SecurityComponents(self, kms_keys)
         analytics = AnalyticsComponents(self)
-        monitoring = MonitoringComponents(self)
+        monitoring = MonitoringComponents(self, kms_keys)
         cleanup = CleanupComponents(self)
 
         # Create network infrastructure
-        self.vpc = network.create_vpc()
+        self.vpc = network.create_vpc(context)
         db_sec_group, valkey_sec_group, lb_sec_group = network.create_security_groups(self.vpc, context)
         self.db_sec_group = db_sec_group
         self.valkey_sec_group = valkey_sec_group
@@ -180,6 +193,10 @@ class OpenemrEcsStack(Stack):
 
         # Create storage infrastructure
         self.elb_log_bucket = storage.create_elb_log_bucket()
+        self.import_staging_bucket = storage.create_import_staging_bucket(
+            self.elb_log_bucket,
+            self.kms_keys.s3_key,
+        )
 
         if is_true(context.get("enable_long_term_cloudtrail_monitoring")):
             cloudtrail_result = storage.create_cloudtrail_logging(self.region)
@@ -454,6 +471,8 @@ class OpenemrEcsStack(Stack):
         self.openemr_service.node.add_dependency(self.mysql_port_var)
 
         # Create one-off ECS task definition for zero-downtime credential rotation
+        if self.db_secret is None:
+            raise RuntimeError("Database secret is required for maintenance tasks")
         self.credential_rotation_task_definition = compute.create_credential_rotation_task(
             self.ecs_cluster,
             self.log_group,
@@ -464,6 +483,16 @@ class OpenemrEcsStack(Stack):
             self.db_secret,
             self.openemr_service.service.service_name,
             self.alb.load_balancer_dns_name,
+        )
+        import_efs_volume_configuration = storage.create_import_efs_volume_configuration(
+            self.file_system_for_sites_folder
+        )
+        self.import_task_definition = compute.create_openemr_import_task(
+            self.log_group,
+            import_efs_volume_configuration,
+            self.db_secret,
+            self.import_staging_bucket,
+            self.openemr_version,
         )
 
         # Create serverless analytics environment (optional)
@@ -849,6 +878,54 @@ def handler(event, context):
             value=self.credential_rotation_task_definition.task_definition_arn,
             description="ARN of ECS task definition used for credential rotation runs",
         )
+        CfnOutput(
+            self,
+            "OpenEMRImportTaskDefinitionArn",
+            value=self.import_task_definition.task_definition_arn,
+            description="ARN of the dormant one-off OpenEMR import task definition",
+        )
+        CfnOutput(
+            self,
+            "OpenEMRImportTargetMode",
+            value="fresh-target-only" if is_true(context.get("openemr_import_target")) else "disabled",
+            description="Whether this stack was explicitly deployed as a fresh import target",
+        )
+        CfnOutput(
+            self,
+            "OpenEMRImportStagingBucketName",
+            value=self.import_staging_bucket.bucket_name,
+            description="Private KMS-encrypted bucket for temporary OpenEMR import staging",
+        )
+        CfnOutput(
+            self,
+            "OpenEMRImportStagingKmsKeyArn",
+            value=self.kms_keys.s3_key.key_arn,
+            description="Customer-managed KMS key used by the OpenEMR import staging bucket",
+        )
+        CfnOutput(
+            self,
+            "OpenEMRImportSecurityGroupId",
+            value=self.ecs_task_sec_group.security_group_id,
+            description="Security group shared by OpenEMR application and one-off import tasks",
+        )
+        CfnOutput(
+            self,
+            "PrivateSubnetIds",
+            value=",".join(subnet.subnet_id for subnet in self.vpc.private_subnets),
+            description="Comma-separated private subnet IDs used by guarded one-off tasks",
+        )
+        CfnOutput(
+            self,
+            "DatabaseClusterArn",
+            value=self.db_instance.cluster_arn,
+            description="Aurora cluster ARN used to verify import recovery points",
+        )
+        CfnOutput(
+            self,
+            "OpenEMRVersion",
+            value=self.openemr_version,
+            description="OpenEMR container version used by the deployed stack",
+        )
 
         # Stack termination protection status
         if self.enable_termination_protection:
@@ -861,3 +938,12 @@ def handler(event, context):
 
         # Stack version
         CfnOutput(self, "StackVersion", value=__version__, description="Version of the CDK stack deployed")
+
+        live_e2e_run_id = context.get("live_e2e_run_id")
+        if live_e2e_run_id:
+            CfnOutput(
+                self,
+                "LiveE2ERunId",
+                value=str(live_e2e_run_id),
+                description="Ownership marker used by the guarded local live-E2E cleanup path",
+            )

@@ -4,6 +4,9 @@
 
 set -e
 
+SCRIPT_PROJECT_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+CDK_COMMAND="$SCRIPT_PROJECT_ROOT/node_modules/.bin/cdk"
+
 echo "========================================="
 echo "CDK Deployment Pre-Flight Validation"
 echo "========================================="
@@ -57,11 +60,11 @@ success "AWS credentials are valid (Account: $ACCOUNT_ID, Region: $REGION)"
 # Check CDK is installed
 echo ""
 echo "3. Checking AWS CDK installation..."
-if ! command -v cdk &> /dev/null; then
-    error "AWS CDK CLI is not installed. Install it with: npm install -g aws-cdk"
+if [ ! -x "$CDK_COMMAND" ]; then
+    error "Pinned AWS CDK CLI is not installed. Run 'npm ci' in the repository."
     exit 1
 fi
-CDK_VERSION=$(cdk --version 2>&1 | head -n 1)
+CDK_VERSION=$("$CDK_COMMAND" --version 2>&1 | head -n 1)
 success "CDK is installed: $CDK_VERSION"
 
 # Check Python dependencies
@@ -79,7 +82,7 @@ echo "5. Checking CDK bootstrap status..."
 if aws cloudformation describe-stacks --stack-name "CDKToolkit" --region "$REGION" &> /dev/null; then
     success "CDK is bootstrapped in $REGION"
 else
-    error "CDK is not bootstrapped in $REGION. Run: cdk bootstrap aws://$ACCOUNT_ID/$REGION"
+    error "CDK is not bootstrapped in $REGION. Run: node_modules/.bin/cdk bootstrap aws://$ACCOUNT_ID/$REGION"
     exit 1
 fi
 
@@ -90,7 +93,7 @@ STACK_NAME="OpenemrEcsStack"
 if aws cloudformation describe-stacks --stack-name "$STACK_NAME" --region "$REGION" &> /dev/null; then
     STACK_STATUS=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" --region "$REGION" --query 'Stacks[0].StackStatus' --output text)
     if [ "$STACK_STATUS" == "ROLLBACK_COMPLETE" ] || [ "$STACK_STATUS" == "ROLLBACK_FAILED" ]; then
-        error "Stack exists in ROLLBACK state. You may need to delete it first: cdk destroy"
+        error "Stack exists in ROLLBACK state. You may need to delete it first: node_modules/.bin/cdk destroy"
     else
         success "Stack exists with status: $STACK_STATUS (this will be an update, not a new deployment)"
     fi
@@ -129,7 +132,7 @@ success "cdk.json found"
 # Try to synthesize (catches Python and CDK errors early)
 echo ""
 echo "8. Validating CDK stack synthesis..."
-if cdk synth --quiet &> /tmp/cdk-synth-output.log 2>&1; then
+if "$CDK_COMMAND" synth --quiet &> /tmp/cdk-synth-output.log 2>&1; then
     success "CDK synthesis successful - stack definition is valid"
 else
     error "CDK synthesis failed. Check the error messages below:"
@@ -166,13 +169,13 @@ if [ $ERROR_COUNT -eq 0 ] && [ $WARNING_COUNT -eq 0 ]; then
     echo -e "${GREEN}✓ All checks passed!${NC}"
     echo ""
     echo "You're ready to deploy. Run:"
-    echo "  cdk deploy"
+    echo "  node_modules/.bin/cdk deploy"
     exit 0
 elif [ $ERROR_COUNT -eq 0 ]; then
     echo -e "${YELLOW}⚠ Validation passed with $WARNING_COUNT warning(s)${NC}"
     echo ""
     echo "You can proceed with deployment, but review the warnings above."
-    echo "Run: cdk deploy"
+    echo "Run: node_modules/.bin/cdk deploy"
     exit 0
 else
     echo -e "${RED}✗ Validation failed with $ERROR_COUNT error(s) and $WARNING_COUNT warning(s)${NC}"
@@ -180,4 +183,3 @@ else
     echo "Please fix the errors above before deploying."
     exit 1
 fi
-

@@ -163,7 +163,7 @@ If the tool reports "Min capacity is 0", this is likely your issue. Change to 0.
 1. Review CloudFormation stack events for specific error messages
 2. Check AWS Service Quotas for any limit issues
 3. Verify all prerequisites are met (see README.md)
-4. Review CDK synthesis output: `cdk synth`
+4. Review CDK synthesis output: `node_modules/.bin/cdk synth`
 
 ### Stack Update Failures
 
@@ -211,4 +211,3 @@ If you encounter issues not covered in this guide:
 
 ### "ResourceNotFoundException"
 - **Solution:** Ensure all dependencies are created before dependent resources
-

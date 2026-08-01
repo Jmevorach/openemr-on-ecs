@@ -162,4 +162,3 @@ When adding new images:
 - [README.md](../README.md) - Main project documentation
 - [DETAILS.md](../DETAILS.md) - Detailed configuration guide (uses many images)
 - [GETTING-STARTED.md](../GETTING-STARTED.md) - Beginner guide (may reference images)
-

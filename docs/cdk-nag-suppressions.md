@@ -153,4 +153,3 @@ All CloudWatch Log Groups are now encrypted with KMS customer-managed keys for H
 ## Summary
 
 All suppressions are intentional and documented with clear rationale. The infrastructure follows AWS best practices and HIPAA security requirements while maintaining operational simplicity.
-

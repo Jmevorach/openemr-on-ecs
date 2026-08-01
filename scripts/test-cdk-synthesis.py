@@ -9,11 +9,11 @@ Usage:
 """
 
 import argparse
-import json
+import shlex
 import subprocess
 import sys
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Any, TypedDict
 
 
 class Colors:
@@ -46,8 +46,16 @@ def warning(message: str) -> None:
     print(f"{Colors.YELLOW}⚠{Colors.NC} {message}")
 
 
+class TestConfiguration(TypedDict):
+    """One named, documented set of CDK context overrides."""
+
+    name: str
+    description: str
+    config: dict[str, Any]
+
+
 # Test configurations with various feature combinations
-TEST_CONFIGURATIONS = [
+TEST_CONFIGURATIONS: list[TestConfiguration] = [
     {
         "name": "minimal",
         "description": "Minimal configuration with only required features",
@@ -260,64 +268,30 @@ TEST_CONFIGURATIONS = [
 CERT_ARN = "arn:aws:acm:us-west-2:123456789012:certificate/00000000-0000-0000-0000-000000000000"
 
 
-def update_cdk_json(config: Dict[str, any], cdk_json_path: Path, backup_path: Path) -> None:
-    """Temporarily update cdk.json with test configuration.
+def _context_value(value: Any) -> str:
+    """Render a Python value as an unambiguous CDK context value."""
 
-    Args:
-        config: Configuration dictionary to apply
-        cdk_json_path: Path to cdk.json file
-        backup_path: Path to backup cdk.json file
-    """
-    # Backup original cdk.json
-    with open(cdk_json_path, "r") as f:
-        original_config = json.load(f)
-
-    with open(backup_path, "w") as f:
-        json.dump(original_config, f, indent=2)
-
-    # Update certificate_arn
-    original_config["context"]["certificate_arn"] = CERT_ARN
-
-    # Apply test configuration
-    for key, value in config.items():
-        original_config["context"][key] = value
-
-    # Write updated config
-    with open(cdk_json_path, "w") as f:
-        json.dump(original_config, f, indent=2)
-
-
-def restore_cdk_json(cdk_json_path: Path, backup_path: Path) -> None:
-    """Restore original cdk.json from backup.
-
-    Args:
-        cdk_json_path: Path to cdk.json file
-        backup_path: Path to backup cdk.json file
-    """
-    if backup_path.exists():
-        with open(backup_path, "r") as f:
-            original_config = json.load(f)
-
-        with open(cdk_json_path, "w") as f:
-            json.dump(original_config, f, indent=2)
-
-        backup_path.unlink()
+    if isinstance(value, bool):
+        return str(value).lower()
+    return str(value)
 
 
 def test_configuration(
     config_name: str,
     config_description: str,
-    config: Dict[str, any],
-    cdk_json_path: Path,
+    config: dict[str, Any],
+    project_root: Path,
+    cdk_command: Path,
     verbose: bool = False,
-) -> Tuple[bool, str]:
+) -> tuple[bool, str]:
     """Test a single configuration.
 
     Args:
         config_name: Name of the configuration
         config_description: Description of the configuration
         config: Configuration dictionary
-        cdk_json_path: Path to cdk.json file
+        project_root: Repository root containing cdk.json
+        cdk_command: Pinned local CDK executable
         verbose: Whether to print verbose output
 
     Returns:
@@ -326,59 +300,52 @@ def test_configuration(
     log(f"Testing configuration: {config_name}")
     log(f"Description: {config_description}")
 
-    backup_path = cdk_json_path.parent / "cdk.json.backup"
+    argv = [
+        str(cdk_command),
+        "synth",
+        "--app",
+        shlex.join((sys.executable, "app.py")),
+        "--no-lookups",
+        "--quiet",
+        "--context",
+        f"certificate_arn={CERT_ARN}",
+    ]
+    for key, value in sorted(config.items()):
+        argv.extend(("--context", f"{key}={_context_value(value)}"))
 
-    try:
-        # Update cdk.json with test configuration
-        update_cdk_json(config, cdk_json_path, backup_path)
+    log("Running cdk synth...")
+    result = subprocess.run(
+        argv,
+        cwd=project_root,
+        capture_output=True,
+        text=True,
+    )
 
-        # Run cdk synth
-        log("Running cdk synth...")
-        result = subprocess.run(
-            ["cdk", "synth", "--no-lookups"],
-            cwd=cdk_json_path.parent,
-            capture_output=True,
-            text=True,
-        )
+    if result.returncode == 0:
+        success(f"Synthesis successful for {config_name}")
 
-        if result.returncode == 0:
-            success(f"Synthesis successful for {config_name}")
-
-            # Check for cdk-nag / Policy Validation errors in output. As of cdk-nag v3
-            # (which runs via the CDK Policy Validation Framework), unacknowledged
-            # findings are reported as lines starting with "ERROR " at column 0, e.g.:
-            #   ERROR The IAM entity contains wildcard permissions ... (AwsSolutions)
-            # This is unrelated to indented "ERROR:" lines that may appear inside
-            # embedded container scripts in the synthesized template output.
-            nag_error_lines = [
-                line
-                for line in (result.stdout + result.stderr).split("\n")
-                if line.startswith("ERROR ")
-            ]
-            if nag_error_lines:
-                error_msg = "CDK Nag errors found in output"
-                error(error_msg)
-                if verbose:
-                    print("\n--- CDK Nag Errors ---")
-                    for line in nag_error_lines:
-                        print(line)
-                    print("--- End CDK Nag Errors ---\n")
-                return False, error_msg
-
-            return True, ""
-        else:
-            error_msg = f"Synthesis failed for {config_name}"
+        # Unacknowledged cdk-nag v3 findings start with "ERROR " at column 0.
+        # This does not match indented "ERROR:" text in embedded container scripts.
+        nag_error_lines = [line for line in (result.stdout + result.stderr).split("\n") if line.startswith("ERROR ")]
+        if nag_error_lines:
+            error_msg = "CDK Nag errors found in output"
             error(error_msg)
             if verbose:
-                print("\n--- Error Output ---")
-                print(result.stderr)
-                print(result.stdout)
-                print("--- End Error Output ---\n")
-            return False, result.stderr
+                print("\n--- CDK Nag Errors ---")
+                for line in nag_error_lines:
+                    print(line)
+                print("--- End CDK Nag Errors ---\n")
+            return False, error_msg
 
-    finally:
-        # Always restore original cdk.json
-        restore_cdk_json(cdk_json_path, backup_path)
+        return True, ""
+    error_msg = f"Synthesis failed for {config_name}"
+    error(error_msg)
+    if verbose:
+        print("\n--- Error Output ---")
+        print(result.stderr)
+        print(result.stdout)
+        print("--- End Error Output ---\n")
+    return False, result.stderr
 
 
 def main() -> int:
@@ -403,9 +370,13 @@ def main() -> int:
     script_dir = Path(__file__).parent
     project_root = script_dir.parent
     cdk_json_path = project_root / "cdk.json"
+    cdk_command = project_root / "node_modules" / ".bin" / "cdk"
 
     if not cdk_json_path.exists():
         error(f"cdk.json not found at {cdk_json_path}")
+        return 1
+    if not cdk_command.is_file():
+        error("Pinned CDK CLI is missing; run npm ci")
         return 1
 
     # Run tests
@@ -419,7 +390,8 @@ def main() -> int:
             test_config["name"],
             test_config["description"],
             test_config["config"],
-            cdk_json_path,
+            project_root,
+            cdk_command,
             args.verbose,
         )
         print()

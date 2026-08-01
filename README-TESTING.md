@@ -96,7 +96,7 @@ The `compose/docker-compose.test.yml` file simulates the exact container startup
 
 ## Leadership Recovery
 
-In ECS, multiple tasks might start simultaneously. OpenEMR's `openemr.sh` handles leadership using `sites/docker-leader` and `sites/docker-completed` files. 
+In ECS, multiple tasks might start simultaneously. OpenEMR's `openemr.sh` handles leadership using `sites/docker-leader` and `sites/docker-completed` files.
 
 If a leadership container fails *before* completion, it may leave a stale `docker-leader` file. The current fix for this is ensuring the lead container succeeds by providing correct SSL materials and environment configuration. If you need to force a reset during testing, you can delete these files from the shared storage (EFS in AWS, or local volumes in Docker).
 
@@ -204,7 +204,7 @@ After testing locally and fixing issues:
 
 1. Update `openemr_ecs/compute.py` if needed
 2. Test the changes locally again
-3. Deploy to AWS with `cdk deploy`
+3. Deploy to AWS with `node_modules/.bin/cdk deploy`
 
 ## Related Documentation
 

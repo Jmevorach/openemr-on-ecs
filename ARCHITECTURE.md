@@ -333,4 +333,3 @@ ElastiCache Valkey (TLS encrypted)
 - **Global Accelerator**: Optional for global users
 - **VPC Endpoints**: Reduce NAT Gateway costs
 - **Connection Keep-Alive**: Optimize connection reuse
-

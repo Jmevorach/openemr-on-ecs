@@ -350,4 +350,3 @@ networks:
 volumes:
   mysql-test-data:
   redis-test-data:
-

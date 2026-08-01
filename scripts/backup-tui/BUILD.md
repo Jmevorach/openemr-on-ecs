@@ -48,7 +48,7 @@ make build
 
 ## Requirements
 
-- Go 1.25 or later
+- Go 1.26 or later
 - AWS credentials configured
 - Make (optional, for using Makefile)
 
@@ -153,4 +153,3 @@ sudo cp bin/backup-tui /usr/local/bin/
 ```
 
 Or use the launcher script which will find the binary automatically.
-

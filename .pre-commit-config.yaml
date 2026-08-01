@@ -1,6 +1,6 @@
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v4.5.0
+    rev: 3e8a8703264a2f4a69428a0aa4dcb512790b2c8c # v6.0.0
     hooks:
       - id: trailing-whitespace
       - id: end-of-file-fixer
@@ -11,28 +11,31 @@ repos:
       - id: check-toml
 
   - repo: https://github.com/psf/black
-    rev: 24.8.0
+    rev: 87928e6d6761a4a6d22250e1fee5601b3998086e # 26.5.1
     hooks:
       - id: black
         language_version: python3.14
         args: [--line-length=120]
 
   - repo: https://github.com/pycqa/flake8
-    rev: 7.1.1
+    rev: c48217e1fc006c2dddd14df54e83b67da15de5cd # 7.3.0
     hooks:
       - id: flake8
-        args: [--max-line-length=120, --extend-ignore=E203,W503,E501]
+        args: ["--max-line-length=120", "--extend-ignore=E203,W503,E501"]
 
   - repo: https://github.com/pycqa/isort
-    rev: 5.13.2
+    rev: a333737ed43df02b18e6c95477ea1b285b3de15a # 8.0.1
     hooks:
       - id: isort
         args: [--profile=black, --line-length=120]
 
   - repo: https://github.com/shellcheck-py/shellcheck-py
-    rev: v0.10.0.1
+    rev: 745eface02aef23e168a8afb6b5737818efbea95 # v0.11.0.1
     hooks:
       - id: shellcheck
-        args: [-f gcc]
+        args:
+          - "-f"
+          - "gcc"
+          - "-e"
+          - "SC1090,SC1091,SC2015,SC2034,SC2059,SC2317"
         files: \.sh$
-

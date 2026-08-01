@@ -1,0 +1,597 @@
+"""Repository declaration discovery for the local version audit."""
+
+from __future__ import annotations
+
+import ast
+import json
+import os
+import re
+from collections import defaultdict
+from functools import lru_cache
+from pathlib import Path
+from typing import Iterable, Iterator
+
+from packaging.requirements import InvalidRequirement, Requirement
+from packaging.utils import canonicalize_name
+
+from .models import Declaration
+
+_TEXT_SUFFIXES = {
+    ".json",
+    ".md",
+    ".py",
+    ".sh",
+    ".toml",
+    ".txt",
+    ".yaml",
+    ".yml",
+}
+_SKIP_DIRECTORIES = {
+    ".git",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".venv",
+    "__pycache__",
+    "cdk.out",
+    "htmlcov",
+    "node_modules",
+    "tmp",
+}
+
+
+def _relative(root: Path, path: Path) -> str:
+    return path.resolve().relative_to(root.resolve()).as_posix()
+
+
+def _iter_text_files(root: Path) -> Iterator[Path]:
+    paths: list[Path] = []
+    for directory, child_directories, filenames in os.walk(root):
+        child_directories[:] = sorted(name for name in child_directories if name not in _SKIP_DIRECTORIES)
+        base = Path(directory)
+        for filename in filenames:
+            path = base / filename
+            if path.suffix.lower() in _TEXT_SUFFIXES or filename == "Dockerfile":
+                paths.append(path)
+    yield from sorted(paths)
+
+
+@lru_cache(maxsize=8)
+def _text_corpus(root_value: str) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    root = Path(root_value)
+    corpus: list[tuple[str, tuple[str, ...]]] = []
+    for path in _iter_text_files(root):
+        try:
+            lines = tuple(path.read_text(encoding="utf-8").splitlines())
+        except UnicodeDecodeError:
+            continue
+        corpus.append((_relative(root, path), lines))
+    return tuple(corpus)
+
+
+def _line_location(root: Path, path: Path, line_number: int) -> str:
+    return f"{_relative(root, path)}:{line_number}"
+
+
+def _discover_value_consumers(root: Path, value: str, definitions: Iterable[str]) -> tuple[str, ...]:
+    if not value or len(value) < 2:
+        return ()
+    definition_paths = {item.split(":", 1)[0] for item in definitions}
+    consumers: list[str] = []
+    for relative, lines in _text_corpus(str(root.resolve())):
+        for line_number, line in enumerate(lines, start=1):
+            if value not in line:
+                continue
+            location = f"{relative}:{line_number}"
+            if relative not in definition_paths:
+                consumers.append(location)
+    return tuple(consumers[:25])
+
+
+def _requirement_lines(path: Path, seen: set[Path] | None = None) -> Iterator[tuple[Path, int, str]]:
+    seen = seen or set()
+    path = path.resolve()
+    if path in seen or not path.is_file():
+        return
+    seen.add(path)
+    for line_number, raw_line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        stripped = raw_line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        include = re.match(r"^(?:-r|--requirement|-c|--constraint)\s+(.+)$", stripped)
+        if include:
+            include_path = (path.parent / include.group(1).strip()).resolve()
+            yield from _requirement_lines(include_path, seen)
+            continue
+        yield path, line_number, raw_line
+
+
+def collect_python_declarations(root: Path) -> list[Declaration]:
+    """Read direct PEP 508 declarations without consulting installed packages."""
+
+    requirement_files = [
+        root / "requirements.txt",
+        root / "requirements-dev.txt",
+        root / "tools" / "credential-rotation" / "requirements.txt",
+        root / "tools" / "openemr-import-worker" / "requirements.txt",
+    ]
+    grouped: dict[str, list[tuple[Path, int, Requirement, str]]] = defaultdict(list)
+    malformed: list[Declaration] = []
+    for requirement_file in requirement_files:
+        category = "python-dev" if requirement_file.name == "requirements-dev.txt" else "python-production"
+        for path, line_number, raw_line in _requirement_lines(requirement_file):
+            line = raw_line.split(" #", 1)[0].strip()
+            if line.startswith("-e "):
+                line = line[3:].strip()
+            if line.startswith(("--", "-f ", "--find-links ")):
+                continue
+            try:
+                requirement = Requirement(line)
+            except InvalidRequirement:
+                malformed.append(
+                    Declaration(
+                        identifier=f"python-invalid:{_relative(root, path)}:{line_number}",
+                        name=line,
+                        category=category,
+                        current="invalid declaration",
+                        definition=_line_location(root, path, line_number),
+                        source_kind="inventory-error",
+                        metadata={"error": "Invalid PEP 508 requirement"},
+                    )
+                )
+                continue
+            grouped[canonicalize_name(requirement.name)].append((path, line_number, requirement, category))
+
+    declarations: list[Declaration] = []
+    for normalized_name, entries in sorted(grouped.items()):
+        definitions = tuple(_line_location(root, path, line) for path, line, _, _ in entries)
+        requirements = [entry[2] for entry in entries]
+        categories = {entry[3] for entry in entries}
+        category = next(iter(categories)) if len(categories) == 1 else "python-shared"
+        constraints = {str(requirement.specifier) for requirement in requirements}
+        urls = {requirement.url for requirement in requirements if requirement.url}
+        exact_versions = {
+            specifier.version
+            for requirement in requirements
+            for specifier in requirement.specifier
+            if specifier.operator in {"==", "==="} and "*" not in specifier.version
+        }
+        if len(exact_versions) == 1:
+            current = next(iter(exact_versions))
+        elif constraints != {""}:
+            current = " / ".join(sorted(value or "<unbounded>" for value in constraints))
+        elif urls:
+            current = " / ".join(sorted(str(value) for value in urls))
+        else:
+            current = "unbounded"
+        first = requirements[0]
+        declarations.append(
+            Declaration(
+                identifier=f"python:{normalized_name}",
+                name=first.name,
+                category=category,
+                current=current,
+                definition=", ".join(definitions),
+                source_kind="pypi" if not urls else "manual",
+                consumers=_discover_value_consumers(root, current, definitions),
+                constraint=" / ".join(sorted(constraints)),
+                metadata={
+                    "normalized_name": normalized_name,
+                    "markers": sorted({str(req.marker) for req in requirements if req.marker}),
+                    "extras": sorted({extra for req in requirements for extra in req.extras}),
+                    "urls": sorted(str(url) for url in urls),
+                    "conflicting_exact_pins": len(exact_versions) > 1,
+                },
+            )
+        )
+    return declarations + malformed
+
+
+def _parse_go_requirements(go_mod: Path) -> list[tuple[int, str, str]]:
+    declarations: list[tuple[int, str, str]] = []
+    in_require_block = False
+    for line_number, raw_line in enumerate(go_mod.read_text(encoding="utf-8").splitlines(), start=1):
+        stripped = raw_line.strip()
+        if stripped == "require (":
+            in_require_block = True
+            continue
+        if in_require_block and stripped == ")":
+            in_require_block = False
+            continue
+        candidate = stripped
+        if candidate.startswith("require "):
+            candidate = candidate.removeprefix("require ").strip()
+        elif not in_require_block:
+            continue
+        if not candidate or candidate.startswith("//") or "// indirect" in candidate:
+            continue
+        parts = candidate.split()
+        if len(parts) >= 2 and parts[1].startswith("v"):
+            declarations.append((line_number, parts[0], parts[1]))
+    return declarations
+
+
+def collect_go_declarations(root: Path) -> list[Declaration]:
+    """Collect direct Go dependencies and the declared Go language version."""
+
+    go_mod = root / "scripts" / "backup-tui" / "go.mod"
+    if not go_mod.is_file():
+        return []
+    declarations: list[Declaration] = []
+    lines = go_mod.read_text(encoding="utf-8").splitlines()
+    for line_number, line in enumerate(lines, start=1):
+        match = re.fullmatch(r"\s*go\s+(\d+(?:\.\d+){1,2})\s*", line)
+        if match:
+            value = match.group(1)
+            definition = _line_location(root, go_mod, line_number)
+            declarations.append(
+                Declaration(
+                    identifier="toolchain:go",
+                    name="Go toolchain",
+                    category="toolchains",
+                    current=value,
+                    definition=definition,
+                    source_kind="go-toolchain",
+                    consumers=_discover_value_consumers(root, value, (definition,)),
+                )
+            )
+            break
+    for line_number, module, version in _parse_go_requirements(go_mod):
+        definition = _line_location(root, go_mod, line_number)
+        declarations.append(
+            Declaration(
+                identifier=f"go:{module}",
+                name=module,
+                category="go",
+                current=version,
+                definition=definition,
+                source_kind="go-proxy",
+                consumers=_discover_value_consumers(root, version, (definition,)),
+                metadata={"module": module},
+            )
+        )
+    return declarations
+
+
+def _attribute_name(node: ast.AST) -> str | None:
+    parts: list[str] = []
+    current = node
+    while isinstance(current, ast.Attribute):
+        parts.append(current.attr)
+        current = current.value
+    if isinstance(current, ast.Name):
+        parts.append(current.id)
+        return ".".join(reversed(parts))
+    return None
+
+
+def collect_stack_platform_declarations(root: Path) -> list[Declaration]:
+    """Collect platform versions from the central StackConstants class."""
+
+    constants_path = root / "openemr_ecs" / "constants.py"
+    tree = ast.parse(constants_path.read_text(encoding="utf-8"), filename=str(constants_path))
+    assignments: dict[str, tuple[int, str]] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+            continue
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        value_node = node.value
+        if value_node is None:
+            continue
+        value: str | None
+        if isinstance(value_node, ast.Constant) and isinstance(value_node.value, (str, int, float)):
+            value = str(value_node.value)
+        else:
+            value = _attribute_name(value_node)
+        if value is None:
+            continue
+        for target in targets:
+            if isinstance(target, ast.Name):
+                assignments[target.id] = (node.lineno, value)
+
+    specifications = {
+        "AURORA_MYSQL_ENGINE_VERSION": (
+            "platform:aurora-mysql",
+            "Aurora MySQL engine",
+            "aws-cdk-aurora",
+        ),
+        "CREDENTIAL_ROTATION_PYTHON_VERSION": (
+            "toolchain:credential-python",
+            "Credential rotation Python",
+            "python-toolchain",
+        ),
+        "EMR_SERVERLESS_RELEASE_LABEL": (
+            "platform:emr-serverless",
+            "EMR Serverless release",
+            "emr-serverless",
+        ),
+        "LAMBDA_PYTHON_RUNTIME": (
+            "platform:lambda-python",
+            "AWS Lambda Python runtime",
+            "lambda-runtime",
+        ),
+        "OPENEMR_VERSION": (
+            "container:openemr",
+            "OpenEMR container",
+            "openemr-container",
+        ),
+    }
+    declarations: list[Declaration] = []
+    for constant_name, (identifier, display_name, source_kind) in specifications.items():
+        if constant_name not in assignments:
+            continue
+        line_number, raw_value = assignments[constant_name]
+        if constant_name == "AURORA_MYSQL_ENGINE_VERSION":
+            current = raw_value.rsplit(".", 1)[-1].removeprefix("VER_").replace("_", ".")
+        elif constant_name == "LAMBDA_PYTHON_RUNTIME":
+            current = raw_value.rsplit(".", 1)[-1].removeprefix("PYTHON_").replace("_", ".")
+        else:
+            current = raw_value
+        definition = _line_location(root, constants_path, line_number)
+        metadata = {"constant": constant_name, "raw_value": raw_value}
+        if constant_name == "OPENEMR_VERSION" and "OPENEMR_ARM64_DIGEST" in assignments:
+            metadata["arm64_digest"] = assignments["OPENEMR_ARM64_DIGEST"][1]
+        declarations.append(
+            Declaration(
+                identifier=identifier,
+                name=display_name,
+                category="containers" if identifier.startswith("container:") else "platforms",
+                current=current,
+                definition=definition,
+                source_kind=source_kind,
+                consumers=_discover_value_consumers(root, current, (definition,)),
+                metadata=metadata,
+            )
+        )
+    return declarations
+
+
+def collect_action_declarations(root: Path) -> list[Declaration]:
+    """Collect unique external GitHub Actions pins."""
+
+    matches: dict[str, list[tuple[Path, int, str, str]]] = defaultdict(list)
+    pattern = re.compile(r"^\s*(?:-\s*)?uses:\s*([^@\s#]+)@([^\s#]+)(?:\s+#\s*(\S+))?")
+    for workflow in sorted((root / ".github" / "workflows").glob("*.yml")):
+        for line_number, line in enumerate(workflow.read_text(encoding="utf-8").splitlines(), start=1):
+            match = pattern.match(line)
+            if not match or match.group(1).startswith(("./", "docker://")):
+                continue
+            action, revision, comment = match.groups()
+            display_revision = (
+                comment
+                if re.fullmatch(r"[0-9a-fA-F]{40}", revision)
+                and comment
+                and re.fullmatch(r"v?\d+(?:\.\d+){0,3}(?:[-+][0-9A-Za-z.-]+)?", comment)
+                else revision
+            )
+            matches[action].append((workflow, line_number, revision, display_revision))
+    declarations: list[Declaration] = []
+    for action, entries in sorted(matches.items()):
+        revisions = sorted({entry[2] for entry in entries})
+        display_revisions = sorted({entry[3] for entry in entries})
+        definitions = tuple(_line_location(root, path, line) for path, line, _, _ in entries)
+        declarations.append(
+            Declaration(
+                identifier=f"github-action:{action.lower()}",
+                name=action,
+                category="github-actions",
+                current=" / ".join(display_revisions),
+                definition=", ".join(definitions),
+                source_kind="github-release",
+                consumers=definitions[1:],
+                constraint="same major unless release notes approve a major upgrade",
+                metadata={
+                    "repository": action,
+                    "conflicting_pins": len(revisions) > 1,
+                    "revisions": revisions,
+                    "revision_labels": {revision: display for _, _, revision, display in entries},
+                    "immutable_sha_pins": all(re.fullmatch(r"[0-9a-fA-F]{40}", revision) for revision in revisions),
+                },
+            )
+        )
+    return declarations
+
+
+def collect_precommit_declarations(root: Path) -> list[Declaration]:
+    """Collect repository and revision pairs from pre-commit configuration."""
+
+    config_path = root / ".pre-commit-config.yaml"
+    if not config_path.is_file():
+        return []
+    repository: str | None = None
+    repository_line = 0
+    declarations: list[Declaration] = []
+    for line_number, line in enumerate(config_path.read_text(encoding="utf-8").splitlines(), start=1):
+        repo_match = re.match(r"\s*-\s+repo:\s*(\S+)", line)
+        if repo_match:
+            repository = repo_match.group(1)
+            repository_line = line_number
+            continue
+        revision_match = re.match(r"\s+rev:\s*(\S+)(?:\s+#\s*(\S+))?", line)
+        if revision_match and repository and repository != "local":
+            revision = revision_match.group(1)
+            label = revision_match.group(2)
+            display_revision = (
+                label
+                if re.fullmatch(r"[0-9a-fA-F]{40}", revision)
+                and label
+                and re.fullmatch(r"v?\d+(?:\.\d+){0,3}(?:[-+][0-9A-Za-z.-]+)?", label)
+                else revision
+            )
+            repository_slug = repository.removesuffix(".git").split("github.com/", 1)[-1]
+            definitions = (
+                _line_location(root, config_path, repository_line),
+                _line_location(root, config_path, line_number),
+            )
+            declarations.append(
+                Declaration(
+                    identifier=f"precommit:{repository_slug.lower()}",
+                    name=repository_slug,
+                    category="pre-commit",
+                    current=display_revision,
+                    definition=", ".join(definitions),
+                    source_kind="github-release",
+                    metadata={
+                        "repository": repository_slug,
+                        "revisions": [revision],
+                        "revision_labels": {revision: display_revision},
+                        "immutable_sha_pins": bool(re.fullmatch(r"[0-9a-fA-F]{40}", revision)),
+                    },
+                )
+            )
+    return declarations
+
+
+def collect_node_declarations(root: Path) -> list[Declaration]:
+    """Collect resolved Node.js dependencies from the committed npm manifest."""
+
+    package_path = root / "package.json"
+    if not package_path.is_file():
+        return []
+    package = json.loads(package_path.read_text(encoding="utf-8"))
+    lock_path = root / "package-lock.json"
+    lock = json.loads(lock_path.read_text(encoding="utf-8")) if lock_path.is_file() else {}
+    locked_packages = lock.get("packages", {}) if isinstance(lock, dict) else {}
+    if not isinstance(locked_packages, dict):
+        locked_packages = {}
+
+    dependencies: dict[str, str] = {}
+    for section in ("dependencies", "devDependencies", "optionalDependencies"):
+        values = package.get(section, {})
+        if not isinstance(values, dict):
+            continue
+        for name, constraint in values.items():
+            if isinstance(name, str) and isinstance(constraint, str):
+                dependencies[name] = constraint
+
+    lines = package_path.read_text(encoding="utf-8").splitlines()
+    declarations: list[Declaration] = []
+    for name, constraint in sorted(dependencies.items()):
+        locked = locked_packages.get(f"node_modules/{name}", {})
+        current = str(locked.get("version", "")).strip() if isinstance(locked, dict) else ""
+        if not current:
+            current = constraint.lstrip("=v~^")
+        line_number = next(
+            (number for number, line in enumerate(lines, start=1) if re.search(rf'"{re.escape(name)}"\s*:', line)),
+            1,
+        )
+        definition = _line_location(root, package_path, line_number)
+        declarations.append(
+            Declaration(
+                identifier=f"node:{name.lower()}",
+                name=name,
+                category="node",
+                current=current,
+                definition=definition,
+                source_kind="npm",
+                constraint=constraint,
+                consumers=_discover_value_consumers(root, current, (definition,)),
+                metadata={"package": name},
+            )
+        )
+    return declarations
+
+
+def collect_workflow_toolchains(root: Path) -> list[Declaration]:
+    """Collect shared toolchain versions from workflows and runtime manifests."""
+
+    declarations: dict[str, list[tuple[Path, int, str, str]]] = defaultdict(list)
+    patterns = [
+        (
+            "toolchain:python",
+            "Python toolchain",
+            "python-toolchain",
+            re.compile(r"PYTHON_VERSION:\s*[\"']?([^\"'\s#]+)"),
+        ),
+        ("toolchain:pip", "pip", "pypi", re.compile(r"PIP_VERSION:\s*[\"']?([^\"'\s#]+)")),
+        ("toolchain:node", "Node.js toolchain", "node-toolchain", re.compile(r"NODE_VERSION:\s*[\"']?([^\"'\s#]+)")),
+        (
+            "toolchain:go-workflow",
+            "Go workflow toolchain",
+            "go-toolchain",
+            re.compile(r"go-version:\s*[\"']?([^\"'\s#]+)"),
+        ),
+        ("toolchain:cdk-cli", "AWS CDK CLI", "npm", re.compile(r"\baws-cdk@([^\s\"']+)")),
+        (
+            "toolchain:golangci-lint",
+            "golangci-lint",
+            "github-release",
+            re.compile(r"golangci-lint(?:/v2)?/cmd/golangci-lint@([^\s\"']+)"),
+        ),
+    ]
+    for workflow in sorted((root / ".github" / "workflows").glob("*.yml")):
+        for line_number, line in enumerate(workflow.read_text(encoding="utf-8").splitlines(), start=1):
+            for identifier, name, source_kind, pattern in patterns:
+                match = pattern.search(line)
+                if match:
+                    declarations[identifier].append((workflow, line_number, match.group(1), name + "|" + source_kind))
+    package_path = root / "package.json"
+    if package_path.is_file():
+        package_lines = package_path.read_text(encoding="utf-8").splitlines()
+        package = json.loads("\n".join(package_lines))
+        engines = package.get("engines", {}) if isinstance(package, dict) else {}
+        node_constraint = engines.get("node") if isinstance(engines, dict) else None
+        node_major = re.search(r"(?<!\d)(\d+)", node_constraint) if isinstance(node_constraint, str) else None
+        if node_major:
+            line_number = next(
+                (number for number, line in enumerate(package_lines, start=1) if re.search(r'"node"\s*:', line)),
+                1,
+            )
+            declarations["toolchain:node"].append(
+                (package_path, line_number, node_major.group(1), "Node.js toolchain|node-toolchain")
+            )
+    for directory, child_directories, filenames in os.walk(root):
+        child_directories[:] = sorted(name for name in child_directories if name not in _SKIP_DIRECTORIES)
+        if "Dockerfile" not in filenames:
+            continue
+        dockerfile = Path(directory) / "Dockerfile"
+        for line_number, line in enumerate(dockerfile.read_text(encoding="utf-8").splitlines(), start=1):
+            match = re.match(r"\s*ARG\s+PYTHON_VERSION=([^\s#]+)", line)
+            if match:
+                declarations["toolchain:python"].append(
+                    (dockerfile, line_number, match.group(1), "Python toolchain|python-toolchain")
+                )
+    result: list[Declaration] = []
+    for identifier, entries in sorted(declarations.items()):
+        versions = sorted({entry[2] for entry in entries})
+        name, source_kind = entries[0][3].split("|", 1)
+        definitions = tuple(_line_location(root, path, line) for path, line, _, _ in entries)
+        metadata: dict[str, object] = {"conflicting_pins": len(versions) > 1}
+        if identifier == "toolchain:golangci-lint":
+            metadata["repository"] = "golangci/golangci-lint"
+        if identifier == "toolchain:cdk-cli":
+            metadata["package"] = "aws-cdk"
+        result.append(
+            Declaration(
+                identifier=identifier,
+                name=name,
+                category="toolchains",
+                current=" / ".join(versions),
+                definition=", ".join(definitions),
+                source_kind=source_kind,
+                consumers=definitions[1:],
+                metadata=metadata,
+            )
+        )
+    return result
+
+
+def collect_declarations(root: Path) -> tuple[Declaration, ...]:
+    """Return the full normalized, deduplicated declaration inventory."""
+
+    declarations = [
+        *collect_python_declarations(root),
+        *collect_go_declarations(root),
+        *collect_stack_platform_declarations(root),
+        *collect_action_declarations(root),
+        *collect_precommit_declarations(root),
+        *collect_node_declarations(root),
+        *collect_workflow_toolchains(root),
+    ]
+    seen: set[str] = set()
+    unique: list[Declaration] = []
+    for declaration in sorted(declarations, key=lambda item: (item.category, item.identifier)):
+        if declaration.identifier in seen:
+            continue
+        seen.add(declaration.identifier)
+        unique.append(declaration)
+    return tuple(unique)

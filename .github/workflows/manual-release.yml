@@ -28,6 +28,7 @@ permissions:
 
 env:
   PYTHON_VERSION: "3.14"
+  PIP_VERSION: "26.2"
   SEMVER_VERSION: "3.0.4"
 
 jobs:
@@ -37,7 +38,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
@@ -69,13 +70,13 @@ jobs:
           echo "change_count=$CHANGES" >> "$GITHUB_OUTPUT"
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Install semantic version tooling
         run: |
-          python -m pip install --upgrade pip
+          python -m pip install "pip==${PIP_VERSION}"
           pip install "semver==${{ env.SEMVER_VERSION }}"
 
       - name: Calculate next version
@@ -150,7 +151,7 @@ jobs:
       - name: Create GitHub release
         id: create_release
         if: steps.changes.outputs.has_changes == 'true' && github.event.inputs.dry_run != 'true'
-        uses: ncipollo/release-action@v1
+        uses: ncipollo/release-action@339a81892b84b4eeb0f6e744e4574d79d0d9b8dd # v1.21.0
         with:
           tag: v${{ steps.version.outputs.next }}
           name: v${{ steps.version.outputs.next }}
@@ -191,4 +192,3 @@ jobs:
               echo "- GitHub release published."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
-

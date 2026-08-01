@@ -5,6 +5,7 @@ from typing import Optional
 from aws_cdk import (
     Duration,
     RemovalPolicy,
+    Stack,
 )
 from aws_cdk import aws_ec2 as ec2
 from aws_cdk import aws_ecr_assets as ecr_assets
@@ -20,6 +21,7 @@ from aws_cdk import aws_secretsmanager as secretsmanager
 from constructs import Construct
 
 from .constants import StackConstants
+from .kms_keys import KmsKeys
 from .nag_suppressions import acknowledge_findings
 from .utils import get_resource_suffix, is_true
 
@@ -36,13 +38,14 @@ class ComputeComponents:
     - SSL/TLS certificate setup in containers
     """
 
-    def __init__(self, scope: Construct):
+    def __init__(self, scope: Construct, kms_keys: KmsKeys):
         """Initialize compute components.
 
         Args:
             scope: The CDK construct scope
         """
         self.scope = scope
+        self.kms_keys = kms_keys
         self.ecs_cluster: Optional[ecs.Cluster] = None
         self.log_group: Optional[logs.LogGroup] = None
         self.kms_key: Optional[kms.Key] = None
@@ -62,6 +65,7 @@ class ComputeComponents:
             Tuple of (ecs_cluster, log_group, kms_key, ecs_exec_group, exec_bucket)
         """
         suffix = get_resource_suffix(context)
+        log_group_removal_policy = RemovalPolicy.DESTROY if context.get("live_e2e_run_id") else RemovalPolicy.RETAIN
 
         if is_true(context.get("enable_ecs_exec")):
             # Create KMS key for ECS Exec encryption
@@ -79,7 +83,12 @@ class ComputeComponents:
             self.kms_key.grant_encrypt_decrypt(iam.ServicePrincipal("s3.amazonaws.com"))
 
             # Create log group for ECS Exec
-            self.ecs_exec_group = logs.LogGroup(self.scope, f"LogGroup-{suffix}", encryption_key=self.kms_key)
+            self.ecs_exec_group = logs.LogGroup(
+                self.scope,
+                f"LogGroup-{suffix}",
+                encryption_key=self.kms_key,
+                removal_policy=log_group_removal_policy,
+            )
 
             # Create S3 bucket for ECS Exec logs
             self.exec_bucket = s3.Bucket(
@@ -145,12 +154,13 @@ class ComputeComponents:
         self.ecs_cluster.node.add_dependency(db_instance)
 
         # Create log group for container logging with KMS encryption
-        kms_key = self.scope.kms_keys.central_key
+        kms_key = self.kms_keys.central_key
         self.log_group = logs.LogGroup(
             self.scope,
             "log-group",
             retention=logs.RetentionDays.ONE_WEEK,
             encryption_key=kms_key,
+            removal_policy=log_group_removal_policy,
         )
 
         return (self.ecs_cluster, self.log_group, self.kms_key, self.ecs_exec_group, self.exec_bucket)
@@ -549,7 +559,7 @@ class ComputeComponents:
             "      break",
             "    fi",
             '    if [ "$attempt" -lt "$MAX_ATTEMPTS" ]; then',
-            '      log "Database not ready yet, waiting ${CURRENT_DELAY}s before retry (attempt $attempt/$MAX_ATTEMPTS)..."',
+            '      log "Database not ready yet, waiting $CURRENT_DELAY seconds before retry (attempt $attempt/$MAX_ATTEMPTS)..."',
             "      sleep $CURRENT_DELAY",
             "      # Exponential backoff: double delay each attempt, max 60s",
             "      CURRENT_DELAY=$((CURRENT_DELAY * 2))",
@@ -617,12 +627,12 @@ class ComputeComponents:
             # and docker-completed doesn't exist, the leader likely failed. This provides reasonable
             # recovery time while still allowing healthy setups (which usually complete in 5-8 minutes) to finish.
             '    if [ "$AGE_SECONDS" -gt 1200 ]; then',
-            '      log "WARNING: Stale docker-leader file detected (${AGE_SECONDS}s old, >20min). Leader likely failed mid-setup."',
+            '      log "WARNING: Stale docker-leader file detected ($AGE_SECONDS seconds old, >20min). Leader likely failed mid-setup."',
             "      log \"This can cause 'Table already exists' errors. Cleaning up stale leader file...\"",
             '      rm -f "$LEADER_FILE" || log "WARNING: Failed to remove stale leader file, continuing anyway"',
             '      log "Stale leader file cleaned up. Another container can now become leader and handle partial database state."',
             "    else",
-            '      log "docker-leader file is recent (${AGE_SECONDS}s old), waiting for leader to complete setup..."',
+            '      log "docker-leader file is recent ($AGE_SECONDS seconds old), waiting for leader to complete setup..."',
             "    fi",
             "  else",
             "    # If we can't determine file age (unlikely on Alpine), log but don't remove.",
@@ -754,13 +764,18 @@ class ComputeComponents:
                 timeout=Duration.seconds(10),
                 retries=3,
             ),
-            image=ecs.ContainerImage.from_registry(f"openemr/openemr:{openemr_version}"),
+            image=ecs.ContainerImage.from_registry(
+                f"openemr/openemr:{openemr_version}@{StackConstants.OPENEMR_ARM64_DIGEST}"
+            ),
             secrets=secrets,
         )
 
         # Suppress inline policy warnings for execution and task roles (after container creates DefaultPolicies)
+        execution_role = openemr_fargate_task_definition.execution_role
+        if execution_role is None:
+            raise RuntimeError("OpenEMR task definition requires an execution role")
         acknowledge_findings(
-            openemr_fargate_task_definition.execution_role.node.find_child("DefaultPolicy").node.find_child("Resource"),
+            execution_role.node.find_child("DefaultPolicy").node.find_child("Resource"),
             [
                 {
                     "id": "HIPAA.Security-IAMNoInlinePolicy",
@@ -810,14 +825,19 @@ class ComputeComponents:
         #
         # When certificate is provided: ALB terminates HTTPS with ACM cert, then re-encrypts to containers
         # Note: Certificate should always be present due to validation requirement
+        min_capacity_value = context.get("openemr_service_fargate_minimum_capacity", 2)
+        max_capacity_value = context.get("openemr_service_fargate_maximum_capacity", 100)
+        min_capacity = int(min_capacity_value if min_capacity_value is not None else 2)
+        max_capacity = int(max_capacity_value if max_capacity_value is not None else 100)
         if certificate:
             openemr_service = ecs_patterns.ApplicationLoadBalancedFargateService(
                 self.scope,
                 "OpenEMRFargateLBService",
                 certificate=certificate,
+                circuit_breaker=ecs.DeploymentCircuitBreaker(rollback=True),
                 min_healthy_percent=100,
                 cluster=ecs_cluster,
-                desired_count=context.get("openemr_service_fargate_minimum_capacity", 2),
+                desired_count=min_capacity,
                 # Allow OpenEMR first-boot install to complete before ECS starts judging ELB target health.
                 # 20 minutes aligns with our stale-leader cleanup and “stuck install” threshold.
                 health_check_grace_period=Duration.seconds(1200),
@@ -845,14 +865,6 @@ class ComputeComponents:
         # Documentation: https://docs.aws.amazon.com/AmazonECS/latest/developerguide/service-rebalancing.html
         openemr_service_cfn = openemr_service.service.node.default_child
         openemr_service_cfn.add_property_override("AvailabilityZoneRebalancing", "ENABLED")  # type: ignore
-
-        # Fail fast on bad deployments: automatically rollback if a deployment can't stabilize.
-        # Note: Some CDK versions do not expose a typed helper on the service construct, so we
-        # apply the CloudFormation property override directly.
-        openemr_service_cfn.add_property_override(
-            "DeploymentConfiguration.DeploymentCircuitBreaker",
-            {"Enable": True, "Rollback": True},
-        )
 
         # Configure health check - container always serves HTTPS on port 443
         openemr_service.target_group.configure_health_check(
@@ -913,12 +925,6 @@ class ComputeComponents:
             )
 
         # Configure autoscaling
-        # Handle None values explicitly (if key exists but is None, use defaults)
-        min_capacity_value = context.get("openemr_service_fargate_minimum_capacity", 2)
-        max_capacity_value = context.get("openemr_service_fargate_maximum_capacity", 100)
-        min_capacity = int(min_capacity_value if min_capacity_value is not None else 2)
-        max_capacity = int(max_capacity_value if max_capacity_value is not None else 100)
-
         scalable_target = openemr_service.service.auto_scale_task_count(
             min_capacity=min_capacity, max_capacity=max_capacity
         )
@@ -997,7 +1003,7 @@ class ComputeComponents:
             )
         )
 
-        rotation_task_definition.task_role.add_to_policy(
+        rotation_task_definition.task_role.add_to_principal_policy(
             iam.PolicyStatement(
                 actions=[
                     "secretsmanager:GetSecretValue",
@@ -1008,7 +1014,7 @@ class ComputeComponents:
                 resources=[rds_slot_secret.secret_arn, db_secret.secret_arn],
             )
         )
-        rotation_task_definition.task_role.add_to_policy(
+        rotation_task_definition.task_role.add_to_principal_policy(
             iam.PolicyStatement(
                 actions=["ecs:UpdateService", "ecs:DescribeServices"],
                 resources=["*"],
@@ -1016,7 +1022,7 @@ class ComputeComponents:
         )
 
         # KMS decrypt + encrypt required: decrypt for GetSecretValue, GenerateDataKey for PutSecretValue.
-        self.scope.kms_keys.central_key.grant_encrypt_decrypt(rotation_task_definition.task_role)
+        self.kms_keys.central_key.grant_encrypt_decrypt(rotation_task_definition.task_role)
 
         # Apply suppressions for least-privilege ECS task execution policies.
         acknowledge_findings(
@@ -1046,8 +1052,11 @@ class ComputeComponents:
                 }
             ],
         )
+        rotation_execution_role = rotation_task_definition.execution_role
+        if rotation_execution_role is None:
+            raise RuntimeError("Credential rotation task requires an execution role")
         acknowledge_findings(
-            rotation_task_definition.execution_role,
+            rotation_execution_role,
             [
                 {
                     "id": "AwsSolutions-IAM5",
@@ -1067,3 +1076,137 @@ class ComputeComponents:
         rotation_task_definition.node.add_dependency(ecs_task_sec_group)
 
         return rotation_task_definition
+
+    def create_openemr_import_task(
+        self,
+        log_group: logs.LogGroup,
+        efs_volume_configuration_for_sites_folder: ecs.EfsVolumeConfiguration,
+        db_secret: secretsmanager.Secret,
+        staging_bucket: s3.Bucket,
+        openemr_version: str,
+    ) -> ecs.FargateTaskDefinition:
+        """Create a dormant one-off task definition for guarded imports."""
+
+        import_task_definition = ecs.FargateTaskDefinition(
+            self.scope,
+            "OpenEMRImportTaskDefinition",
+            cpu=1024,
+            memory_limit_mib=2048,
+            ephemeral_storage_gib=50,
+            runtime_platform=ecs.RuntimePlatform(cpu_architecture=ecs.CpuArchitecture.ARM64),
+        )
+        import_task_definition.add_volume(
+            name="SitesFolderVolume",
+            efs_volume_configuration=efs_volume_configuration_for_sites_folder,
+        )
+        import_container = import_task_definition.add_container(
+            "OpenEMRImportContainer",
+            logging=ecs.LogDriver.aws_logs(
+                stream_prefix="ecs/openemr-import",
+                log_group=log_group,
+            ),
+            essential=True,
+            container_name="openemr-import",
+            image=ecs.ContainerImage.from_asset(
+                "tools/openemr-import-worker",
+                platform=ecr_assets.Platform.LINUX_ARM64,
+            ),
+            environment={
+                "IMPORT_STAGING_BUCKET": staging_bucket.bucket_name,
+                "MYSQL_DATABASE": "openemr",
+                "MYSQL_SSL_CA": "/etc/ssl/certs/aws-rds-global.pem",
+                "OPENEMR_SITES_MOUNT_ROOT": "/mnt/openemr-sites",
+                "TARGET_OPENEMR_VERSION": openemr_version,
+            },
+            secrets={
+                "MYSQL_HOST": ecs.Secret.from_secrets_manager(db_secret, "host"),
+                "MYSQL_PORT": ecs.Secret.from_secrets_manager(db_secret, "port"),
+                "MYSQL_USERNAME": ecs.Secret.from_secrets_manager(db_secret, "username"),
+                "MYSQL_PASSWORD": ecs.Secret.from_secrets_manager(db_secret, "password"),
+            },
+        )
+        import_container.add_mount_points(
+            ecs.MountPoint(
+                container_path="/mnt/openemr-sites",
+                read_only=False,
+                source_volume="SitesFolderVolume",
+            )
+        )
+        staging_bucket.grant_read_write(import_task_definition.task_role)
+        import_task_definition.task_role.add_to_principal_policy(
+            iam.PolicyStatement(
+                effect=iam.Effect.DENY,
+                actions=["s3:DeleteObject*", "s3:PutObject*"],
+                resources=[staging_bucket.arn_for_objects("locks/*")],
+            )
+        )
+        staging_bucket_resource = staging_bucket.node.default_child
+        if not isinstance(staging_bucket_resource, s3.CfnBucket):
+            raise RuntimeError("Import staging bucket requires an L1 bucket resource")
+        staging_bucket_logical_id = Stack.of(self.scope).get_logical_id(staging_bucket_resource)
+        acknowledge_findings(
+            import_task_definition.task_role,
+            [
+                {
+                    "id": "HIPAA.Security-IAMNoInlinePolicy",
+                    "reason": (
+                        "The one-off import task needs an inline policy scoped to its "
+                        "temporary KMS-encrypted staging bucket"
+                    ),
+                },
+                {
+                    "id": "AwsSolutions-IAM5",
+                    "reason": (
+                        "Object-level access is restricted to the import staging bucket; "
+                        "the object key is selected per migration at runtime, while KMS "
+                        "wildcard action suffixes are required by S3 encryption grants"
+                    ),
+                    "appliesTo": [
+                        f"Resource::<{staging_bucket_logical_id}.Arn>/*",
+                        "Action::s3:Abort*",
+                        "Action::s3:DeleteObject*",
+                        "Action::s3:GetBucket*",
+                        "Action::s3:GetObject*",
+                        "Action::s3:List*",
+                        "Action::s3:PutObject*",
+                        "Action::kms:GenerateDataKey*",
+                        "Action::kms:ReEncrypt*",
+                    ],
+                },
+            ],
+        )
+        acknowledge_findings(
+            import_task_definition,
+            [
+                {
+                    "id": "AwsSolutions-ECS2",
+                    "reason": (
+                        "Environment values contain only resource names, paths, and a "
+                        "public application version; database credentials use ECS secrets"
+                    ),
+                }
+            ],
+        )
+        import_execution_role = import_task_definition.execution_role
+        if import_execution_role is None:
+            raise RuntimeError("OpenEMR import task requires an execution role")
+        acknowledge_findings(
+            import_execution_role,
+            [
+                {
+                    "id": "AwsSolutions-IAM5",
+                    "reason": (
+                        "The CDK-generated ECS execution role requires wildcard ECR "
+                        "authorization and CloudWatch Logs delivery permissions"
+                    ),
+                    "appliesTo": ["Resource::*"],
+                },
+                {
+                    "id": "HIPAA.Security-IAMNoInlinePolicy",
+                    "reason": (
+                        "CDK generates an inline execution policy for image, log, and " "Secrets Manager access"
+                    ),
+                },
+            ],
+        )
+        return import_task_definition

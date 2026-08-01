@@ -16,27 +16,28 @@ virtualenv.
 Requirements:
     - The main project virtualenv, activated (see ../requirements.txt)
     - Node.js/npm (already required for the `cdk` CLI)
-    - cdk-dia:      npm install -g cdk-dia
+    - Pinned Node tools: npm ci
     - Graphviz:     brew install graphviz   # macOS (or: sudo apt-get install graphviz)
 
 Usage (from the project root, with the virtualenv activated):
     python diagrams/generate.py
 """
 
-import json
 import os
+import shlex
 import shutil
-import subprocess
+
+# Fixed local tools are invoked without a shell.
+import subprocess  # nosec B404
 import sys
 from pathlib import Path
+from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 OUTPUT_DIR = Path(__file__).resolve().parent
 CDK_OUT = OUTPUT_DIR / ".cdk.out"
-CDK_JSON = PROJECT_ROOT / "cdk.json"
-CDK_JSON_BACKUP = PROJECT_ROOT / "cdk.json.diagrams-backup"
-CDK_CONTEXT_JSON = PROJECT_ROOT / "cdk.context.json"
-CDK_CONTEXT_JSON_BACKUP = PROJECT_ROOT / "cdk.context.json.diagrams-backup"
+CDK_COMMAND = PROJECT_ROOT / "node_modules" / ".bin" / "cdk"
+CDK_DIA_COMMAND = PROJECT_ROOT / "node_modules" / ".bin" / "cdk-dia"
 
 # Dummy values that let `cdk synth` complete without real AWS credentials or
 # a real ACM certificate / Route53 hosted zone. Mirrors the approach used in
@@ -46,16 +47,8 @@ DUMMY_REGION = "us-east-1"
 DUMMY_CERT_ARN = f"arn:aws:acm:{DUMMY_REGION}:{DUMMY_ACCOUNT}:certificate/00000000-0000-0000-0000-000000000000"
 DUMMY_CONTEXT_OVERRIDES = {
     "certificate_arn": DUMMY_CERT_ARN,
-    "route53_domain": None,
+    "route53_domain": "null",
     "security_group_ip_range_ipv4": "10.0.0.0/8",
-}
-# Avoids a live AWS API call to resolve availability zones under --no-lookups.
-DUMMY_CDK_CONTEXT = {
-    f"availability-zones:account={DUMMY_ACCOUNT}:region={DUMMY_REGION}": [
-        f"{DUMMY_REGION}a",
-        f"{DUMMY_REGION}b",
-        f"{DUMMY_REGION}c",
-    ]
 }
 
 DIAGRAMS = [
@@ -64,48 +57,42 @@ DIAGRAMS = [
 ]
 
 
-def run(cmd: list, **kwargs) -> subprocess.CompletedProcess:
+def run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
     print(f"  $ {' '.join(cmd)}")
-    return subprocess.run(cmd, cwd=PROJECT_ROOT, check=True, **kwargs)
-
-
-def stage_dummy_config() -> None:
-    """Back up cdk.json/cdk.context.json and replace them with safe, synth-only values."""
-    if CDK_JSON_BACKUP.exists() or CDK_CONTEXT_JSON_BACKUP.exists():
-        sys.exit(
-            "ERROR: found a leftover backup file from a previous interrupted run "
-            f"({CDK_JSON_BACKUP.name} / {CDK_CONTEXT_JSON_BACKUP.name}). "
-            "Manually inspect and restore cdk.json/cdk.context.json before re-running."
-        )
-    shutil.copy2(CDK_JSON, CDK_JSON_BACKUP)
-    with open(CDK_JSON) as f:
-        cdk_json = json.load(f)
-    cdk_json["context"].update(DUMMY_CONTEXT_OVERRIDES)
-    with open(CDK_JSON, "w") as f:
-        json.dump(cdk_json, f, indent=2)
-        f.write("\n")
-
-    if CDK_CONTEXT_JSON.exists():
-        shutil.copy2(CDK_CONTEXT_JSON, CDK_CONTEXT_JSON_BACKUP)
-    with open(CDK_CONTEXT_JSON, "w") as f:
-        json.dump(DUMMY_CDK_CONTEXT, f, indent=2)
-
-
-def restore_real_config() -> None:
-    """Restore the original cdk.json/cdk.context.json, removing the dummy ones."""
-    if CDK_JSON_BACKUP.exists():
-        shutil.move(str(CDK_JSON_BACKUP), str(CDK_JSON))
-    if CDK_CONTEXT_JSON_BACKUP.exists():
-        shutil.move(str(CDK_CONTEXT_JSON_BACKUP), str(CDK_CONTEXT_JSON))
-    elif CDK_CONTEXT_JSON.exists():
-        CDK_CONTEXT_JSON.unlink()
+    # Executables are fixed and arguments are passed without a shell.
+    return subprocess.run(  # nosec B603
+        cmd,
+        cwd=PROJECT_ROOT,
+        check=True,
+        text=True,
+        **kwargs,
+    )
 
 
 def synth() -> None:
     print("Running cdk synth...")
-    env = {**os.environ, "CDK_DEFAULT_ACCOUNT": DUMMY_ACCOUNT, "CDK_DEFAULT_REGION": DUMMY_REGION}
+    env = {
+        **os.environ,
+        "AWS_ACCESS_KEY_ID": "fake",
+        "AWS_SECRET_ACCESS_KEY": "fake",
+        "AWS_DEFAULT_REGION": DUMMY_REGION,
+        "AWS_REGION": DUMMY_REGION,
+        "CDK_DEFAULT_REGION": DUMMY_REGION,
+    }
+    env.pop("CDK_DEFAULT_ACCOUNT", None)
+    command = [
+        str(CDK_COMMAND),
+        "synth",
+        "--app",
+        shlex.join((sys.executable, "app.py")),
+        "--no-lookups",
+        "--output",
+        str(CDK_OUT),
+    ]
+    for key, value in sorted(DUMMY_CONTEXT_OVERRIDES.items()):
+        command.extend(("--context", f"{key}={value}"))
     run(
-        ["cdk", "synth", "--no-lookups", "-o", str(CDK_OUT)],
+        command,
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -121,9 +108,7 @@ def generate_diagrams() -> None:
         target = OUTPUT_DIR / f"{diagram['name']}.png"
         print(f"Generating {diagram['description']} -> {target.relative_to(PROJECT_ROOT)}")
         cmd = [
-            "npx",
-            "--yes",
-            "cdk-dia",
+            str(CDK_DIA_COMMAND),
             "--tree",
             str(tree_path),
             "--target-path",
@@ -140,23 +125,21 @@ def generate_diagrams() -> None:
 
 
 def main() -> None:
-    if shutil.which("cdk") is None:
-        sys.exit("ERROR: 'cdk' CLI not found. Install with: npm install --location=global aws-cdk@2")
-    if shutil.which("npx") is None:
-        sys.exit("ERROR: 'npx' (Node.js/npm) not found. Install Node.js first.")
+    if not CDK_COMMAND.is_file() or not os.access(CDK_COMMAND, os.X_OK):
+        sys.exit("ERROR: pinned CDK CLI not found; run npm ci.")
+    if not CDK_DIA_COMMAND.is_file() or not os.access(CDK_DIA_COMMAND, os.X_OK):
+        sys.exit("ERROR: pinned cdk-dia CLI not found; run npm ci.")
     if shutil.which("dot") is None:
         sys.exit("ERROR: Graphviz 'dot' binary not found. Install with: brew install graphviz")
 
-    stage_dummy_config()
     try:
         synth()
         generate_diagrams()
     except subprocess.CalledProcessError as exc:
-        output = exc.stdout.decode() if exc.stdout else ""
+        output = exc.stdout or ""
         print(output, file=sys.stderr)
         sys.exit(f"ERROR: command failed: {' '.join(exc.cmd)}")
     finally:
-        restore_real_config()
         shutil.rmtree(CDK_OUT, ignore_errors=True)
 
     print("Done.")

@@ -19,6 +19,7 @@ from aws_cdk import aws_s3 as s3
 from aws_cdk import aws_sagemaker as sagemaker
 from constructs import Construct
 
+from .constants import StackConstants
 from .nag_suppressions import (
     acknowledge_findings,
     suppress_lambda_common_findings,
@@ -304,12 +305,17 @@ class AnalyticsComponents:
             container_name="openemr",
             entry_point=["/bin/sh", "-c"],
             command=command_array,
-            image=ecs.ContainerImage.from_registry(f"openemr/openemr:{openemr_version}"),
+            image=ecs.ContainerImage.from_registry(
+                f"openemr/openemr:{openemr_version}@{StackConstants.OPENEMR_ARM64_DIGEST}"
+            ),
         )
 
         # Suppress execution role inline policy (after container creates DefaultPolicy)
+        sync_execution_role = sync_efs_to_s3_task.execution_role
+        if sync_execution_role is None:
+            raise RuntimeError("EFS export task requires an execution role")
         acknowledge_findings(
-            sync_efs_to_s3_task.execution_role,
+            sync_execution_role,
             [
                 {
                     "id": "HIPAA.Security-IAMNoInlinePolicy",
@@ -385,8 +391,11 @@ class AnalyticsComponents:
         )
 
         # Add inline policy suppression for EFS export Lambda (after grants create DefaultPolicy)
+        export_efs_role = export_efs_to_s3_lambda.role
+        if export_efs_role is None:
+            raise RuntimeError("EFS export Lambda requires an execution role")
         acknowledge_findings(
-            export_efs_to_s3_lambda.role.node.find_child("DefaultPolicy").node.find_child("Resource"),
+            export_efs_role.node.find_child("DefaultPolicy").node.find_child("Resource"),
             [
                 {
                     "id": "HIPAA.Security-IAMNoInlinePolicy",
@@ -426,7 +435,10 @@ class AnalyticsComponents:
         suppress_lambda_common_findings(
             export_rds_to_s3_lambda, vpc_required=False, reason_suffix="Triggers RDS snapshot export"
         )
-        suppress_lambda_role_common_findings(export_rds_to_s3_lambda.role, role_type="basic")
+        export_rds_role = export_rds_to_s3_lambda.role
+        if export_rds_role is None:
+            raise RuntimeError("RDS export Lambda requires an execution role")
+        suppress_lambda_role_common_findings(export_rds_role, role_type="basic")
 
         # Grant KMS permissions (this creates DefaultPolicy for the Lambda)
         self.analytics_kms_key.grant_encrypt_decrypt(export_rds_to_s3_lambda.grant_principal)
@@ -436,7 +448,7 @@ class AnalyticsComponents:
 
         # Add inline policy suppression for RDS export Lambda (after grants create DefaultPolicy)
         acknowledge_findings(
-            export_rds_to_s3_lambda.role.node.find_child("DefaultPolicy").node.find_child("Resource"),
+            export_rds_role.node.find_child("DefaultPolicy").node.find_child("Resource"),
             [
                 {
                     "id": "AwsSolutions-IAM5",

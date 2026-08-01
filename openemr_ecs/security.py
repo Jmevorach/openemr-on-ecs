@@ -30,6 +30,8 @@ from aws_cdk import (
 )
 from constructs import Construct
 
+from .constants import StackConstants
+from .kms_keys import KmsKeys
 from .nag_suppressions import (
     acknowledge_findings,
     suppress_lambda_common_findings,
@@ -49,13 +51,14 @@ class SecurityComponents:
     - SSL/TLS materials generation and maintenance
     """
 
-    def __init__(self, scope: Construct):
+    def __init__(self, scope: Construct, kms_keys: KmsKeys):
         """Initialize security components.
 
         Args:
             scope: The CDK construct scope
         """
         self.scope = scope
+        self.kms_keys = kms_keys
         self.certificate: Optional[acm.Certificate] = None
         self.one_time_create_ssl_materials_lambda: Optional[triggers.TriggerFunction] = None
         self.efs_only_security_group: Optional[ec2.SecurityGroup] = None
@@ -258,10 +261,23 @@ class SecurityComponents:
         if not context.get("route53_domain"):
             return None
 
-        # Define the hosted zone in Route 53
-        hosted_zone = route53.HostedZone.from_lookup(
-            self.scope, "HostedZoneForRoute53", domain_name=str(context.get("route53_domain"))
-        )
+        # Live E2E binds the exact preflight-validated zone ID and therefore
+        # never depends on a stale CDK lookup cache. Normal deployments retain
+        # the convenient domain lookup path.
+        hosted_zone_id = context.get("route53_hosted_zone_id")
+        if hosted_zone_id:
+            hosted_zone = route53.HostedZone.from_hosted_zone_attributes(
+                self.scope,
+                "HostedZoneForRoute53",
+                hosted_zone_id=str(hosted_zone_id),
+                zone_name=str(context.get("route53_domain")),
+            )
+        else:
+            hosted_zone = route53.HostedZone.from_lookup(
+                self.scope,
+                "HostedZoneForRoute53",
+                domain_name=str(context.get("route53_domain")),
+            )
 
         self.certificate = acm.Certificate(
             self.scope,
@@ -389,7 +405,7 @@ class SecurityComponents:
         access_key = iam.AccessKey(self.scope, "SmtpAccessKey", user=ses_smtp_user)
 
         # Get KMS key for secrets encryption
-        kms_key = self.scope.kms_keys.central_key
+        kms_key = self.kms_keys.central_key
 
         # Create secrets for SMTP credentials
         self.smtp_password = secretsmanager.Secret(
@@ -432,22 +448,23 @@ class SecurityComponents:
         )
 
         # Add suppressions for SMTP setup Lambda (before grants)
+        smtp_role = self.one_time_generate_smtp_credential_lambda.role
+        if smtp_role is None:
+            raise RuntimeError("SMTP credential Lambda requires an execution role")
         suppress_lambda_common_findings(
             self.one_time_generate_smtp_credential_lambda,
             vpc_required=False,
             reason_suffix="Generates SMTP credentials via AWS API, does not require VPC access.",
         )
-        suppress_lambda_role_common_findings(self.one_time_generate_smtp_credential_lambda.role, role_type="smtp_setup")
+        suppress_lambda_role_common_findings(smtp_role, role_type="smtp_setup")
 
         # Grant permissions (this creates the DefaultPolicy)
-        secret_access_key.grant_read(self.one_time_generate_smtp_credential_lambda.role)  # type: ignore
-        self.smtp_password.grant_write(self.one_time_generate_smtp_credential_lambda.role)  # type: ignore
+        secret_access_key.grant_read(smtp_role)
+        self.smtp_password.grant_write(smtp_role)
 
         # Add suppressions for DefaultPolicy (after grants create it)
         acknowledge_findings(
-            self.one_time_generate_smtp_credential_lambda.role.node.find_child("DefaultPolicy").node.find_child(
-                "Resource"
-            ),
+            smtp_role.node.find_child("DefaultPolicy").node.find_child("Resource"),
             [
                 {
                     "id": "AwsSolutions-IAM5",
@@ -572,6 +589,8 @@ class SecurityComponents:
 
         # Set deletion policy to RETAIN - our cleanup Lambda will handle deletion
         cfn_rule_set = self.ses_rule_set.node.default_child
+        if not isinstance(cfn_rule_set, ses.CfnReceiptRuleSet):
+            raise RuntimeError("SES rule set is missing its CloudFormation resource")
         cfn_rule_set.apply_removal_policy(RemovalPolicy.RETAIN)
 
         email_forwarding_address = context.get("email_forwarding_address")
@@ -758,12 +777,17 @@ class SecurityComponents:
             container_name="openemr",
             entry_point=["/bin/sh", "-c"],
             command=command_array,
-            image=ecs.ContainerImage.from_registry(f"openemr/openemr:{openemr_version}"),
+            image=ecs.ContainerImage.from_registry(
+                f"openemr/openemr:{openemr_version}@{StackConstants.OPENEMR_ARM64_DIGEST}"
+            ),
         )
 
         # Suppress inline policy for execution role (after container creates the DefaultPolicy)
+        ssl_execution_role = create_ssl_materials_task.execution_role
+        if ssl_execution_role is None:
+            raise RuntimeError("SSL maintenance task requires an execution role")
         acknowledge_findings(
-            create_ssl_materials_task.execution_role,
+            ssl_execution_role,
             [
                 {
                     "id": "HIPAA.Security-IAMNoInlinePolicy",
