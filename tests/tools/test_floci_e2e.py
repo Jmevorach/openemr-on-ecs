@@ -17,6 +17,7 @@ from tools.live_e2e.floci_seed import (
     DEFAULT_ACCOUNT_ID,
     DEFAULT_REGION,
     DEFAULT_ROUTE53_DOMAIN,
+    operator_session,
     seed_live_e2e_world,
     seed_owned_stack,
     seed_service_smoke_resources,
@@ -62,7 +63,7 @@ def floci_endpoint(floci_container: Any) -> str:
 
 
 @pytest.fixture(scope="module")
-def floci_session(floci_container: Any) -> Any:
+def floci_admin_session(floci_container: Any) -> Any:
     return boto3.Session(
         region_name=floci_container.get_region(),
         aws_access_key_id=floci_container.get_access_key(),
@@ -71,13 +72,23 @@ def floci_session(floci_container: Any) -> Any:
 
 
 @pytest.fixture(scope="module")
-def seeded_world(floci_session: Any, floci_endpoint: str) -> dict[str, str]:
+def seeded_world(floci_admin_session: Any, floci_endpoint: str) -> dict[str, str]:
     return seed_live_e2e_world(
-        floci_session,
+        floci_admin_session,
         endpoint_url=floci_endpoint,
         account_id=DEFAULT_ACCOUNT_ID,
         region=DEFAULT_REGION,
         route53_domain=DEFAULT_ROUTE53_DOMAIN,
+    )
+
+
+@pytest.fixture(scope="module")
+def floci_session(seeded_world: dict[str, str], floci_endpoint: str) -> Any:
+    return operator_session(
+        endpoint_url=floci_endpoint,
+        region=DEFAULT_REGION,
+        access_key_id=seeded_world["aws_access_key_id"],
+        secret_access_key=seeded_world["aws_secret_access_key"],
     )
 
 

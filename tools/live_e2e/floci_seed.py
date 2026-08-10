@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+import boto3
 from botocore.exceptions import ClientError
 
 DEFAULT_ACCOUNT_ID = "123456789012"
@@ -12,6 +13,7 @@ DEFAULT_REGION = "us-east-1"
 DEFAULT_ROUTE53_DOMAIN = "e2e.floci.test"
 DEFAULT_BOOTSTRAP_STACK = "CDKToolkit"
 DEFAULT_QUALIFIER = "hnb659fds"
+DEFAULT_OPERATOR_USER = "openemr-floci-e2e"
 
 
 def boto_client(session: Any, service: str, *, endpoint_url: str, region: str) -> Any:
@@ -29,6 +31,7 @@ def seed_live_e2e_world(
     route53_domain: str = DEFAULT_ROUTE53_DOMAIN,
     bootstrap_stack_name: str = DEFAULT_BOOTSTRAP_STACK,
     qualifier: str = DEFAULT_QUALIFIER,
+    operator_user: str = DEFAULT_OPERATOR_USER,
 ) -> dict[str, str]:
     """Create bootstrap stack, hosted zone, and CDK roles required by adapter.preflight."""
 
@@ -36,6 +39,7 @@ def seed_live_e2e_world(
     route53 = boto_client(session, "route53", endpoint_url=endpoint_url, region=region)
     iam = boto_client(session, "iam", endpoint_url=endpoint_url, region=region)
 
+    operator = _ensure_operator_user(iam, username=operator_user)
     hosted_zone_id = _ensure_hosted_zone(route53, route53_domain)
     _ensure_bootstrap_stack(cfn, bootstrap_stack_name, qualifier=qualifier)
     role_names = _ensure_bootstrap_roles(
@@ -52,6 +56,9 @@ def seed_live_e2e_world(
         "bootstrap_stack_name": bootstrap_stack_name,
         "qualifier": qualifier,
         "role_count": str(len(role_names)),
+        "aws_access_key_id": operator["access_key_id"],
+        "aws_secret_access_key": operator["secret_access_key"],
+        "operator_user": operator_user,
     }
 
 
@@ -140,6 +147,56 @@ def seed_service_smoke_resources(
         "log_group": log_group,
         "ecs_cluster": cluster,
     }
+
+
+def _ensure_operator_user(iam: Any, *, username: str) -> dict[str, str]:
+    """Create a non-root IAM user/access key so live E2E root rejection is satisfied."""
+
+    try:
+        iam.create_user(UserName=username)
+    except ClientError as exc:
+        code = str(exc.response.get("Error", {}).get("Code", ""))
+        if code not in {"EntityAlreadyExists", "EntityAlreadyExistsException"}:
+            raise
+    allow_all = {
+        "Version": "2012-10-17",
+        "Statement": [{"Effect": "Allow", "Action": "*", "Resource": "*"}],
+    }
+    try:
+        iam.put_user_policy(
+            UserName=username,
+            PolicyName="floci-operator-allow-all",
+            PolicyDocument=json.dumps(allow_all),
+        )
+    except ClientError:
+        pass
+    existing = iam.list_access_keys(UserName=username).get("AccessKeyMetadata", [])
+    for item in existing:
+        key_id = item.get("AccessKeyId")
+        if isinstance(key_id, str) and key_id:
+            iam.delete_access_key(UserName=username, AccessKeyId=key_id)
+    created = iam.create_access_key(UserName=username)["AccessKey"]
+    return {
+        "access_key_id": str(created["AccessKeyId"]),
+        "secret_access_key": str(created["SecretAccessKey"]),
+    }
+
+
+def operator_session(
+    *,
+    endpoint_url: str,
+    region: str,
+    access_key_id: str,
+    secret_access_key: str,
+) -> Any:
+    """Build a boto3 session using the seeded non-root Floci operator credentials."""
+
+    del endpoint_url  # callers still pass it for API symmetry with other helpers
+    return boto3.Session(
+        region_name=region,
+        aws_access_key_id=access_key_id,
+        aws_secret_access_key=secret_access_key,
+    )
 
 
 def _normalize_hosted_zone_id(zone_id: str) -> str:

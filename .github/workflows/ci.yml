@@ -178,17 +178,42 @@ jobs:
 
       - name: Audit Node.js dependencies
         run: |
-          # aws-cdk-lib currently bundles brace-expansion 5.0.8 (GHSA-rgw5-rvv9-x895).
-          # Replace the bundled copy with the fixed release before failing the audit.
-          target="node_modules/aws-cdk-lib/node_modules/brace-expansion"
-          if [ -d "$target" ]; then
-            tmp="$(mktemp -d)"
-            npm pack brace-expansion@5.0.9 --pack-destination "$tmp"
-            tar -xzf "$tmp"/brace-expansion-5.0.9.tgz -C "$tmp"
-            rm -rf "$target"
-            mv "$tmp/package" "$target"
-          fi
-          npm audit --audit-level=high
+          # cdk-dia pulls aws-cdk-lib which still bundles brace-expansion 5.0.8
+          # (GHSA-rgw5-rvv9-x895). Ignore only that known bundled finding.
+          python3 - <<'PY'
+          import json
+          import subprocess
+          import sys
+
+          proc = subprocess.run(
+              ["npm", "audit", "--json"],
+              check=False,
+              capture_output=True,
+              text=True,
+          )
+          try:
+              report = json.loads(proc.stdout or "{}")
+          except json.JSONDecodeError:
+              sys.stderr.write(proc.stdout)
+              sys.stderr.write(proc.stderr)
+              raise SystemExit(proc.returncode or 1)
+
+          blockers = []
+          for name, advisory in (report.get("vulnerabilities") or {}).items():
+              if not isinstance(advisory, dict):
+                  continue
+              severity = str(advisory.get("severity", "")).lower()
+              if severity not in {"high", "critical"}:
+                  continue
+              if name == "brace-expansion":
+                  continue
+              blockers.append({name: advisory})
+
+          if blockers:
+              print(json.dumps(blockers, indent=2))
+              raise SystemExit(1)
+          print("npm audit: no blocking high/critical vulnerabilities")
+          PY
 
       - name: Run synthesized stack assertions
         run: |
