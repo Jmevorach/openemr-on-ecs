@@ -70,7 +70,7 @@ npm ci
 # IMPORTANT: A certificate is required. Set either route53_domain or certificate_arn.
 
 # Deploy (Duration: ~40 min)
-node_modules/.bin/cdk deploy
+cdk deploy
 ```
 
 **What you get:**
@@ -82,7 +82,7 @@ node_modules/.bin/cdk deploy
 
 ```bash
 # When you're done
-node_modules/.bin/cdk destroy
+cdk destroy
 ```
 
 ---
@@ -271,13 +271,13 @@ Before starting, you'll need:
 4. **Bootstrap CDK (First Time Only)**
    ```bash
    # One-time setup - tells AWS about CDK
-   node_modules/.bin/cdk bootstrap
+   cdk bootstrap
    ```
 
 5. **Deploy (~40 minutes)**
    ```bash
    # Deploy OpenEMR to AWS
-   node_modules/.bin/cdk deploy
+   cdk deploy
    ```
 
    CDK will show what it's creating and ask for confirmation. Type `y` to proceed. The deployment takes about 40 minutes - AWS is creating databases, networking, and other resources.
@@ -347,6 +347,7 @@ Before starting, you'll need:
 ├── IMPORTING-OPENEMR.md                     # Guarded fresh-target import workflow
 ├── KNOWLEDGE-MCP.md                          # Read-only repository MCP setup and safety
 ├── LIVE-E2E.md                               # Approval-gated real deployment test
+├── FLOCI.md                                  # Floci-emulated live E2E CI coverage
 ├── MAINTAINERS.md                            # Audit, validation, MCP, and operations index
 ├── DETAILS.md                               # Deep configuration details
 ├── ARCHITECTURE.md                          # Architecture deep dive
@@ -382,7 +383,7 @@ Cursor configuration, available tools, safety boundaries, and validation.
 ## Clean Up
 When you have completed your testing you can clean up the deployed environment by running:
 ```bash
-   node_modules/.bin/cdk destroy
+   cdk destroy
 ```
 Manual cleanup items:
 - AWS Backup Vault
@@ -576,6 +577,7 @@ safety boundaries for AWS-aware tools.
 - [Local Testing Guide](README-TESTING.md) - Test the container startup locally using Docker Compose before deploying to AWS
 - [Maintainer Guide](MAINTAINERS.md) - Local audit, validation, knowledge MCP, import, and E2E workflows
 - [Guarded Live E2E Guide](LIVE-E2E.md) - Approval-gated real deployment, validation, teardown, and timing
+- [Floci Emulation Guide](FLOCI.md) - CI/local AWS emulator coverage for the live E2E adapter
 - [Deployment Timing Report](docs/deployment-timing.md) - Sanitized measurements from explicitly approved live E2E runs
 
 ### Helper Scripts & Tools

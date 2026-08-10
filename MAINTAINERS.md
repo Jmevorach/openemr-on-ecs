@@ -42,7 +42,8 @@ Commands fall into four classes:
    approval and confirmation procedures.
 
 No regular GitHub Actions workflow invokes the live E2E runner or import
-execution.
+execution. The Floci job runs pytest against a local AWS emulator only; see
+[FLOCI.md](FLOCI.md).
 
 ## Version audit
 
@@ -91,9 +92,17 @@ Run the primary Python suite:
   --cov-fail-under=90 \
   --maxfail=1 \
   -n auto \
-  -m "not integration" \
+  -m "not integration and not floci" \
   -q
 ```
+
+Run Floci-backed live E2E emulation tests (Docker required):
+
+```bash
+.venv/bin/pytest tests/tools/test_floci_e2e.py -m floci -q
+```
+
+See [FLOCI.md](FLOCI.md) for the emulator safety model and coverage limits.
 
 Run formatting, linting, typing, and static security checks:
 
@@ -144,7 +153,7 @@ AWS_ACCESS_KEY_ID=fake \
 AWS_SECRET_ACCESS_KEY=fake \
 AWS_DEFAULT_REGION=us-west-2 \
 CDK_DEFAULT_REGION=us-west-2 \
-  node_modules/.bin/cdk synth --no-lookups \
+  cdk synth --no-lookups \
   -c certificate_arn=arn:aws:acm:us-west-2:123456789012:certificate/00000000-0000-0000-0000-000000000000
 ```
 

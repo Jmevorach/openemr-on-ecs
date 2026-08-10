@@ -35,6 +35,7 @@ from tools._shared import (
 )
 
 from .aws import LiveE2EAws, unexpected_residuals
+from .emulator import is_floci_e2e_enabled, resolve_emulator_endpoint_url
 from .models import SCHEMA_VERSION, CheckResult, PhaseTiming, ResidualResource, RunResult
 from .report import append_result, regenerate_report, update_cleanup_result
 
@@ -136,7 +137,7 @@ class LiveE2ERunner:
             local_checks, local_versions = self._local_checks(resolved_cdk_command)
             tool_validation_duration = time.monotonic() - tool_validation_started
             checks = list(local_checks)
-            adapter = self.aws_factory(region=region, profile_name=aws_profile)
+            adapter = self._aws_adapter(region=region, profile_name=aws_profile)
             aws_checks, aws_facts = adapter.preflight(
                 approved_account=approved_account,
                 route53_domain=route53_domain,
@@ -322,7 +323,7 @@ class LiveE2ERunner:
         )
         with self._lock():
             self._revalidate_preflight(preflight)
-            adapter = self.aws_factory(
+            adapter = self._aws_adapter(
                 region=str(preflight["region"]),
                 profile_name=_optional_string(preflight.get("aws_profile")),
             )
@@ -383,7 +384,7 @@ class LiveE2ERunner:
             recorded_profile = _optional_string(preflight.get("aws_profile"))
             if aws_profile is not None and aws_profile != recorded_profile:
                 raise ToolError("Cleanup AWS profile does not match the owner-only preflight record")
-            adapter = self.aws_factory(region=region, profile_name=recorded_profile)
+            adapter = self._aws_adapter(region=region, profile_name=recorded_profile)
             identity = adapter.identity()
             if identity["account_id"] != approved_account:
                 raise ToolError("Active AWS account does not match --approved-account")
@@ -967,8 +968,21 @@ class LiveE2ERunner:
         if os.environ.get(APPROVAL_ENVIRONMENT) != run_id:
             raise ToolError(f"{APPROVAL_ENVIRONMENT} must equal the approved run ID")
 
+    def _aws_adapter(self, *, region: str, profile_name: str | None) -> Any:
+        endpoint_url = resolve_emulator_endpoint_url()
+        emulated = is_floci_e2e_enabled(endpoint_url)
+        return self.aws_factory(
+            region=region,
+            profile_name=profile_name,
+            endpoint_url=endpoint_url,
+            emulated=emulated,
+        )
+
     @staticmethod
     def _assert_local_execution(*, require_tty: bool) -> None:
+        endpoint_url = resolve_emulator_endpoint_url()
+        if is_floci_e2e_enabled(endpoint_url):
+            return
         if any(os.environ.get(name, "").strip().lower() not in {"", "0", "false"} for name in _CI_ENVIRONMENT_SIGNALS):
             raise ToolError("Live E2E is disabled in CI")
         if require_tty and (not sys.stdin.isatty() or not sys.stdout.isatty()):

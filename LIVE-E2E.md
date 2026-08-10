@@ -2,11 +2,15 @@
 
 The live E2E utility deploys a real, isolated OpenEMR stack, validates it, records timings, and deletes it. It is intentionally local-only and is never invoked by GitHub Actions.
 
+CI does run a **Floci-emulated** adapter and mocked runner suite (see [FLOCI.md](FLOCI.md)). That path talks only to a local emulator container; it does not deploy to AWS and does not call `python -m tools.live_e2e preflight|run|cleanup`.
+
 **Do not run `preflight`, `run`, or `cleanup` until the maintainer has explicitly approved a live AWS test, the exact account and Region, and the expected cost.** Normal CI and `python -m tools.live_e2e report` do not create or change AWS resources.
 
 ## Safety model
 
-- `CI` must be unset and deployment requires an interactive terminal.
+- `CI` must be unset and deployment requires an interactive terminal, unless
+  `OPENEMR_FLOCI_E2E=1` is set with a verified local emulator endpoint (Floci
+  CI only; real AWS endpoints are rejected).
 - The account is supplied explicitly and compared byte-for-byte with STS before
   synthesis and again before deployment. Only a local HMAC-derived opaque
   account label reaches committed timing history.

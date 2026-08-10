@@ -46,5 +46,6 @@ addopts = [
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "integration: marks tests as integration tests",
+    "floci: marks tests that require a Floci AWS emulator container",
     "unit: marks tests as unit tests",
 ]

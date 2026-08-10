@@ -956,6 +956,8 @@ def test_workflows_never_invoke_live_e2e() -> None:
     assert "tools.live_e2e preflight" not in workflows
     assert "tools.live_e2e run" not in workflows
     assert "tools.live_e2e cleanup" not in workflows
+    assert "pytest tests/tools/test_floci_e2e.py" in workflows
+    assert "OPENEMR_FLOCI_E2E" in workflows
 
 
 class _AssetS3:

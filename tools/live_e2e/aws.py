@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import re
 import time
 from datetime import datetime, timedelta, timezone
@@ -82,9 +83,23 @@ class LiveE2EAws:
         region: str,
         profile_name: str | None = None,
         session: Any | None = None,
+        endpoint_url: str | None = None,
+        emulated: bool = False,
     ) -> None:
         self.region = region
-        self.session = session or boto3.Session(profile_name=profile_name, region_name=region)
+        self.endpoint_url = endpoint_url
+        self.emulated = bool(emulated or endpoint_url)
+        if session is not None:
+            self.session = session
+        elif self.endpoint_url:
+            self.session = boto3.Session(
+                region_name=region,
+                aws_access_key_id=os.environ.get("AWS_ACCESS_KEY_ID", "test"),
+                aws_secret_access_key=os.environ.get("AWS_SECRET_ACCESS_KEY", "test"),
+                aws_session_token=os.environ.get("AWS_SESSION_TOKEN") or None,
+            )
+        else:
+            self.session = boto3.Session(profile_name=profile_name, region_name=region)
         self._clients: dict[str, Any] = {}
 
     def client(self, service: str, *, global_service: bool = False) -> Any:
@@ -92,7 +107,9 @@ class LiveE2EAws:
 
         key = f"{service}:{global_service}"
         if key not in self._clients:
-            kwargs = {} if global_service else {"region_name": self.region}
+            kwargs: dict[str, Any] = {} if global_service else {"region_name": self.region}
+            if self.endpoint_url:
+                kwargs["endpoint_url"] = self.endpoint_url
             self._clients[key] = self.session.client(service, **kwargs)
         return self._clients[key]
 
@@ -197,7 +214,9 @@ class LiveE2EAws:
             )
         )
         checks.extend(self._quota_probes())
-        hosted_zone_id = str(zone.get("Id", "")).removeprefix("/hostedzone/")
+        hosted_zone_id = str(zone.get("Id", "")).removeprefix("/hostedzone/").upper()
+        if self.emulated and hosted_zone_id and not hosted_zone_id.startswith("Z"):
+            hosted_zone_id = f"Z{hosted_zone_id}"
         if not re.fullmatch(r"Z[A-Z0-9]+", hosted_zone_id):
             raise ToolError("Route 53 returned an invalid hosted-zone ID")
         return tuple(checks), {
@@ -831,7 +850,10 @@ class LiveE2EAws:
         if not isinstance(region, str):
             region = self.region
         if not isinstance(role_arn, str) or not role_arn:
-            return self.session.client(service, region_name=region)
+            kwargs: dict[str, Any] = {"region_name": region}
+            if self.endpoint_url:
+                kwargs["endpoint_url"] = self.endpoint_url
+            return self.session.client(service, **kwargs)
         arguments = {
             "RoleArn": role_arn,
             "RoleSessionName": f"openemr-e2e-audit-{hashlib.sha256(role_arn.encode()).hexdigest()[:8]}",
@@ -847,7 +869,10 @@ class LiveE2EAws:
             aws_session_token=credentials["SessionToken"],
             region_name=region,
         )
-        return session.client(service, region_name=region)
+        client_kwargs: dict[str, Any] = {"region_name": region}
+        if self.endpoint_url:
+            client_kwargs["endpoint_url"] = self.endpoint_url
+        return session.client(service, **client_kwargs)
 
     @staticmethod
     def _record_asset(
@@ -954,14 +979,33 @@ class LiveE2EAws:
         execution_role_arn = (
             f"arn:{partition}:iam::{account_id}:role/" f"cdk-{qualifier}-cfn-exec-role-{account_id}-{self.region}"
         )
+        caller_principal = _iam_principal_arn(caller_arn)
+        log_group_arn = f"arn:{partition}:logs:{self.region}:{account_id}:" "log-group:/aws/lambda/OpenemrE2E-*"
+        if self.emulated:
+            self._assert_role_exists(execution_role_arn)
+            return (
+                CheckResult(
+                    "cdk-bootstrap-role-assumption",
+                    "pass",
+                    f"assumed {assumed} required bootstrap roles",
+                ),
+                CheckResult(
+                    "deployment-write-permissions",
+                    "pass",
+                    "floci-emulated; IAM policy simulation skipped after role existence checks",
+                ),
+                CheckResult(
+                    "local-cleanup-permissions",
+                    "pass",
+                    "floci-emulated; cleanup principal simulation skipped",
+                ),
+            )
+
         self._simulate_actions(
             principal_arn=execution_role_arn,
             actions=_WRITE_ACTIONS,
             label="CDK CloudFormation execution role",
         )
-
-        caller_principal = _iam_principal_arn(caller_arn)
-        log_group_arn = f"arn:{partition}:logs:{self.region}:{account_id}:" "log-group:/aws/lambda/OpenemrE2E-*"
         self._simulate_actions(
             principal_arn=caller_principal,
             actions=("logs:DeleteLogGroup",),
@@ -986,6 +1030,13 @@ class LiveE2EAws:
                 "owned Lambda log-group deletion is allowed",
             ),
         )
+
+    def _assert_role_exists(self, role_arn: str) -> None:
+        role_name = role_arn.rsplit("/", 1)[-1]
+        try:
+            self.client("iam", global_service=True).get_role(RoleName=role_name)
+        except (BotoCoreError, ClientError) as exc:
+            raise ToolError(f"Required IAM role is missing in the emulator: {role_name}") from exc
 
     def _simulate_actions(
         self,
@@ -1014,6 +1065,15 @@ class LiveE2EAws:
             raise ToolError(f"{label} lacks required actions: {', '.join(denied)}")
 
     def _quota_probes(self) -> list[CheckResult]:
+        if self.emulated:
+            return [
+                CheckResult(
+                    f"quota-{name}",
+                    "pass",
+                    f"floci-emulated; service-quotas unavailable; required-headroom={minimum:g}",
+                )
+                for name, _service_code, _quota_code, minimum in _QUOTAS
+            ]
         checks: list[CheckResult] = []
         client = self.client("service-quotas")
         for name, service_code, quota_code, minimum in _QUOTAS:
