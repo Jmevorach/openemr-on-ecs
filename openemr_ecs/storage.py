@@ -20,7 +20,7 @@ from constructs import Construct
 
 from .kms_keys import KmsKeys
 from .nag_suppressions import acknowledge_findings
-from .utils import get_resource_suffix
+from .utils import get_resource_suffix, is_true
 
 
 class StorageComponents:
@@ -470,6 +470,23 @@ class StorageComponents:
         self.efs_volume_configuration_for_ssl_folder = ecs.EfsVolumeConfiguration(
             file_system_id=self.file_system_for_ssl_folder.file_system_id, transit_encryption="ENABLED"
         )
+
+        if is_true(context.get("live_e2e_emulated")):
+            # Floci cannot attach AWS Backup managed policies, so emulated stacks
+            # skip BackupPlan and need an explicit HIPAA suppression on EFS.
+            for file_system in (
+                self.file_system_for_sites_folder,
+                self.file_system_for_ssl_folder,
+            ):
+                acknowledge_findings(
+                    file_system,
+                    [
+                        {
+                            "id": "HIPAA.Security-EFSInBackupPlan",
+                            "reason": "Emulated live E2E omits AWS Backup because Floci lacks AWS Backup managed IAM policies",
+                        }
+                    ],
+                )
 
         return (
             self.file_system_for_sites_folder,
