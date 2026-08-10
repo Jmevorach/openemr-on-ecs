@@ -10,7 +10,7 @@ import re
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable, Sequence, cast
 
 import boto3
 import requests
@@ -252,7 +252,7 @@ class LiveE2EAws:
             raise
         if not stacks:
             return None
-        stack = stacks[0]
+        stack = cast(dict[str, Any], stacks[0])
         status = str(stack.get("StackStatus", ""))
         # Floci often leaves DELETE_COMPLETE / DELETE_FAILED tombstones that AWS
         # would omit from describe-by-name. Treat both as absent when emulated.
@@ -823,7 +823,9 @@ class LiveE2EAws:
             if "does not exist" in message:
                 return None
             raise
-        return stacks[0] if stacks else None
+        if not stacks:
+            return None
+        return cast(dict[str, Any], stacks[0])
 
     def residual_resources(self, run_id: str) -> tuple[ResidualResource, ...]:
         """Inventory taggable resources left after deletion and classify KMS pending deletion."""
