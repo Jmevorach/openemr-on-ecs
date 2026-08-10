@@ -70,10 +70,11 @@ Aurora MySQL it derives the image tag from `EngineVersion`, so
 `8.0.mysql_aurora.3.12.0` becomes `mysql:8.0.mysql_aurora.3.12.0`. That tag is
 not published on Docker Hub.
 
-Before the full live E2E path runs, `tools.live_e2e.floci_images` pulls
-`mysql:8.0` (and Valkey), then retags MySQL to the Aurora engine tag Floci will
-request. CI also runs that prep step explicitly so the host daemon already has
-the images when Floci starts sidecars.
+Before the full live E2E path runs, `tools.live_e2e.floci_images` reads
+`StackConstants.AURORA_MYSQL_ENGINE_VERSION`, pulls `mysql:8.0` (and Valkey),
+then retags MySQL to the Aurora engine tag Floci will request. CI also runs that
+prep step explicitly so the host daemon already has the images when Floci starts
+sidecars.
 
 ## Limits
 
