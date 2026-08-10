@@ -113,6 +113,16 @@ def test_ci_without_floci_still_blocks(tmp_path: Path, monkeypatch: pytest.Monke
         )
 
 
+def test_cdk_emulator_environ_is_injected_in_floci_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(FLOCI_E2E_ENVIRONMENT, "1")
+    monkeypatch.setenv("OPENEMR_AWS_ENDPOINT_URL", "http://127.0.0.1:4566")
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIATEST")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "secret")
+    env = LiveE2ERunner._cdk_emulator_environ()
+    assert env["AWS_ENDPOINT_URL"] == "http://127.0.0.1:4566"
+    assert env["AWS_ACCESS_KEY_ID"] == "AKIATEST"
+
+
 def test_emulated_quota_probes_skip_service_quotas() -> None:
     from tools.live_e2e.aws import LiveE2EAws
 

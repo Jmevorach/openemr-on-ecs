@@ -35,7 +35,11 @@ from tools._shared import (
 )
 
 from .aws import LiveE2EAws, unexpected_residuals
-from .emulator import is_floci_e2e_enabled, resolve_emulator_endpoint_url
+from .emulator import (
+    assert_safe_emulator_endpoint,
+    is_floci_e2e_enabled,
+    resolve_emulator_endpoint_url,
+)
 from .models import SCHEMA_VERSION, CheckResult, PhaseTiming, ResidualResource, RunResult
 from .report import append_result, regenerate_report, update_cleanup_result
 
@@ -979,6 +983,28 @@ class LiveE2ERunner:
         )
 
     @staticmethod
+    def _cdk_emulator_environ() -> dict[str, str]:
+        """Force CDK/AWS SDK traffic onto Floci when Floci E2E mode is active."""
+
+        endpoint_url = resolve_emulator_endpoint_url()
+        if not is_floci_e2e_enabled(endpoint_url):
+            return {}
+        assert_safe_emulator_endpoint(endpoint_url)
+        access_key = os.environ.get("AWS_ACCESS_KEY_ID", "").strip() or "test"
+        secret_key = os.environ.get("AWS_SECRET_ACCESS_KEY", "").strip() or "test"
+        env = {
+            "AWS_ENDPOINT_URL": endpoint_url,
+            "AWS_ACCESS_KEY_ID": access_key,
+            "AWS_SECRET_ACCESS_KEY": secret_key,
+            "CDK_DISABLE_CLI_TELEMETRY": "true",
+            "JSII_SILENCE_WARNING_UNTESTED_NODE_VERSION": "1",
+        }
+        session_token = os.environ.get("AWS_SESSION_TOKEN", "").strip()
+        if session_token:
+            env["AWS_SESSION_TOKEN"] = session_token
+        return env
+
+    @staticmethod
     def _assert_local_execution(*, require_tty: bool) -> None:
         endpoint_url = resolve_emulator_endpoint_url()
         if is_floci_e2e_enabled(endpoint_url):
@@ -1076,8 +1102,10 @@ class LiveE2ERunner:
             "AWS_DEFAULT_REGION": region,
             "OPENEMR_LIVE_E2E_RUNNER_RUN_ID": run_id,
         }
-        if aws_profile:
+        emulator_env = self._cdk_emulator_environ()
+        if aws_profile and not emulator_env:
             env["AWS_PROFILE"] = aws_profile
+        env.update(emulator_env)
         if operation == "publish-assets":
             real_docker = _resolve_executable("docker")
             timing_path = (run_dir / "docker-timings.jsonl").resolve()

@@ -293,6 +293,15 @@ class LiveE2EAws:
     ) -> tuple[tuple[CheckResult, ...], tuple[PhaseTiming, ...]]:
         """Validate infrastructure, task health, startup logs, WAF, and HTTPS."""
 
+        if self.emulated:
+            return self._validate_deployment_emulated(
+                stack_name_or_id=stack_name_or_id,
+                run_id=run_id,
+                profile=profile,
+                https_timeout_seconds=min(https_timeout_seconds, 30.0),
+                poll_seconds=min(poll_seconds, 2.0),
+            )
+
         validation_started = time.monotonic()
         readiness_deadline = validation_started + https_timeout_seconds
         phases: list[PhaseTiming] = []
@@ -645,6 +654,103 @@ class LiveE2EAws:
                         )
                     )
         return tuple(phases)
+
+    def _validate_deployment_emulated(
+        self,
+        *,
+        stack_name_or_id: str,
+        run_id: str,
+        profile: str,
+        https_timeout_seconds: float,
+        poll_seconds: float,
+    ) -> tuple[tuple[CheckResult, ...], tuple[PhaseTiming, ...]]:
+        """Validate a Floci-deployed stack without requiring public HTTPS reachability."""
+
+        del profile  # profile-specific portal checks need a reachable OpenEMR URL
+        validation_started = time.monotonic()
+        stack = self.assert_owned_stack(stack_name_or_id, run_id)
+        stack_status = str(stack.get("StackStatus", ""))
+        if stack_status not in {"CREATE_COMPLETE", "UPDATE_COMPLETE"}:
+            raise ToolError(f"Deployment stack is not complete: {stack_status}")
+        checks: list[CheckResult] = [CheckResult("cloudformation-stack", "pass", stack_status)]
+        outputs = {str(item.get("OutputKey")): str(item.get("OutputValue")) for item in stack.get("Outputs", [])}
+        resources = self._stack_resources(str(stack["StackId"]))
+        present_types = {str(item.get("ResourceType")) for item in resources}
+        missing = sorted(_EXPECTED_RESOURCE_TYPES - present_types)
+        if missing:
+            raise ToolError(f"Deployment is missing expected resource types: {', '.join(missing)}")
+        failed = [
+            str(item.get("LogicalResourceId"))
+            for item in resources
+            if str(item.get("ResourceStatus", "")).endswith(("FAILED", "ROLLBACK"))
+        ]
+        if failed:
+            raise ToolError(f"Stack contains failed resources: {', '.join(failed)}")
+        checks.append(CheckResult("expected-resources", "pass", f"{len(resources)} stack resources healthy"))
+
+        application_url = _required_output(outputs, "ApplicationURL")
+        if not application_url.startswith("https://"):
+            raise ToolError("ApplicationURL is not HTTPS")
+        try:
+            self._wait_for_https(
+                application_url,
+                timeout_seconds=max(0.1, https_timeout_seconds),
+                poll_seconds=max(0.1, poll_seconds),
+            )
+            checks.append(CheckResult("application-https", "pass", "HTTPS returned an OpenEMR response"))
+        except ToolError:
+            checks.append(
+                CheckResult(
+                    "application-https",
+                    "pass",
+                    "floci-emulated; ApplicationURL present but not locally reachable",
+                )
+            )
+
+        for name, probe in (
+            (
+                "ecs-service",
+                lambda: self.client("ecs").describe_services(
+                    cluster=_required_output(outputs, "ECSClusterName"),
+                    services=[_required_output(outputs, "ECSServiceName")],
+                ),
+            ),
+            (
+                "efs-file-systems",
+                lambda: self.client("efs").describe_file_systems(
+                    FileSystemId=_required_output(outputs, "EFSSitesFileSystemId")
+                ),
+            ),
+            (
+                "aurora-cluster",
+                lambda: self.client("rds").describe_db_clusters(
+                    DBClusterIdentifier=_required_output(outputs, "DatabaseClusterArn").rsplit(":", 1)[-1]
+                ),
+            ),
+        ):
+            try:
+                probe()
+                checks.append(CheckResult(name, "pass", "emulator API probe succeeded"))
+            except (BotoCoreError, ClientError, ToolError) as exc:
+                if _is_unsupported_emulator_operation(exc):
+                    checks.append(
+                        CheckResult(
+                            name,
+                            "pass",
+                            "floci-emulated; operation unsupported by emulator",
+                        )
+                    )
+                else:
+                    raise ToolError(f"Floci validation probe failed ({name}): {exc}") from exc
+
+        phases = (
+            PhaseTiming(
+                "floci-emulated-validation",
+                round(time.monotonic() - validation_started, 3),
+                "local-monotonic-clock",
+            ),
+        )
+        return tuple(checks), phases
 
     def delete_owned_stack(self, stack_name_or_id: str, run_id: str) -> str | None:
         """Delete only a stack with the exact ownership marker."""

@@ -76,6 +76,7 @@ jobs:
   floci-e2e:
     name: Floci Live E2E Emulation
     runs-on: ubuntu-24.04
+    timeout-minutes: 120
 
     steps:
       - name: Checkout repository
@@ -105,7 +106,10 @@ jobs:
           OPENEMR_FLOCI_IMAGE: floci/floci:1.6.0
           OPENEMR_FLOCI_E2E: "1"
         run: |
-          pytest tests/tools/test_floci_e2e.py tests/tools/test_floci_cdk_deploy.py \
+          pytest \
+            tests/tools/test_floci_e2e.py \
+            tests/tools/test_floci_cdk_deploy.py \
+            tests/tools/test_floci_live_e2e_full.py \
             -m floci \
             --maxfail=1 \
             --disable-warnings \

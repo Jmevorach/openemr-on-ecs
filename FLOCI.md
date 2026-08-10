@@ -19,13 +19,16 @@ The `Floci Live E2E Emulation` job in `.github/workflows/ci.yml`:
    simulation, and emulator-unsupported read APIs such as EFS are Floci-emulated
    shims)
 4. Verifies owned-stack cleanup refuses foreign ownership markers
-5. Runs a mocked runner path (`preflight` → approved `run` → cleanup) with the
-   OpenEMR live E2E CDK deploy/validate stubbed and CloudFormation state held in
-   Floci
-6. Runs a real pinned-CDK lifecycle against Floci for the minimal smoke stack in
-   `tools/floci_cdk/`: `cdk bootstrap` → `cdk deploy` → `cdk destroy`
+5. Runs a mocked runner path for ownership/cleanup orchestration with CDK
+   stubbed
+6. Runs a real pinned-CDK smoke lifecycle against Floci (`tools/floci_cdk`):
+   `cdk bootstrap` → `cdk deploy` → `cdk destroy`
+7. Runs the **full guarded live E2E runner** against Floci: real bootstrap,
+   OpenEMR E2E stack synth/diff/deploy through the pinned CDK CLI, emulated
+   post-deploy validation, and owned-stack destroy
 
-GitHub Actions never invokes `python -m tools.live_e2e preflight|run|cleanup`.
+GitHub Actions never invokes `python -m tools.live_e2e preflight|run|cleanup`
+as a workflow step; the Floci job drives the same runner through pytest.
 
 ## Local commands
 
@@ -33,7 +36,11 @@ GitHub Actions never invokes `python -m tools.live_e2e preflight|run|cleanup`.
 .venv/bin/python -m pip install -r requirements.txt -r requirements-dev.txt
 npm ci
 pytest tests/tools/test_floci_emulator.py -q
-pytest tests/tools/test_floci_e2e.py tests/tools/test_floci_cdk_deploy.py -m floci -q
+pytest \
+  tests/tools/test_floci_e2e.py \
+  tests/tools/test_floci_cdk_deploy.py \
+  tests/tools/test_floci_live_e2e_full.py \
+  -m floci -q
 ```
 
 Optional compose helper (usually unnecessary; tests start Floci themselves):
@@ -58,7 +65,12 @@ export AWS_SECRET_ACCESS_KEY=test
 
 ## Limits
 
-The Floci CDK smoke stack is not the OpenEMR application stack. Aurora
-Serverless v2, ElastiCache Serverless, WAF associations, custom resources, and
-OpenEMR container asset publishing remain covered by synthesis tests and an
-explicitly approved live AWS run.
+The full Floci live E2E path deploys the real OpenEMR E2E stack through CDK.
+Post-deploy validation is Floci-aware: it still requires CloudFormation
+`CREATE_COMPLETE`, ownership markers, and the expected resource types, but it
+does not require a publicly reachable OpenEMR HTTPS endpoint. Emulator gaps in
+individual read APIs are reported as Floci-emulated passes.
+
+If Floci cannot provision a required resource type, deploy fails and CI fails —
+that is intentional. An explicitly approved live AWS run remains the fidelity
+bar for production-like HTTPS, ECS health, and quota behavior.

@@ -101,7 +101,11 @@ Run Floci-backed live E2E emulation and CDK deploy/destroy tests (Docker +
 
 ```bash
 npm ci
-.venv/bin/pytest tests/tools/test_floci_e2e.py tests/tools/test_floci_cdk_deploy.py -m floci -q
+.venv/bin/pytest \
+  tests/tools/test_floci_e2e.py \
+  tests/tools/test_floci_cdk_deploy.py \
+  tests/tools/test_floci_live_e2e_full.py \
+  -m floci -q
 ```
 
 See [FLOCI.md](FLOCI.md) for the emulator safety model and coverage limits.

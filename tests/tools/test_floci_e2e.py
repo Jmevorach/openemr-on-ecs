@@ -198,7 +198,7 @@ def test_floci_mocked_runner_e2e(
     floci_endpoint: str,
     seeded_world: dict[str, str],
 ) -> None:
-    """Exercise runner preflight→run→cleanup against Floci with CDK/validate stubbed."""
+    """Fast ownership/cleanup orchestration test; full CDK path is in test_floci_live_e2e_full."""
 
     root = tmp_path / "repo"
     root.mkdir()

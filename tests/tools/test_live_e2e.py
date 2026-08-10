@@ -958,6 +958,7 @@ def test_workflows_never_invoke_live_e2e() -> None:
     assert "tools.live_e2e cleanup" not in workflows
     assert "tests/tools/test_floci_e2e.py" in workflows
     assert "tests/tools/test_floci_cdk_deploy.py" in workflows
+    assert "tests/tools/test_floci_live_e2e_full.py" in workflows
     assert "OPENEMR_FLOCI_E2E" in workflows
 
 
