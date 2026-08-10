@@ -106,14 +106,11 @@ jobs:
           OPENEMR_FLOCI_IMAGE: floci/floci:1.6.0
           OPENEMR_FLOCI_E2E: "1"
         run: |
-          pytest \
-            tests/tools/test_floci_e2e.py \
-            tests/tools/test_floci_cdk_deploy.py \
-            tests/tools/test_floci_live_e2e_full.py \
-            -m floci \
-            --maxfail=1 \
-            --disable-warnings \
-            -q
+          # Adapter/ownership tests first, then real CDK smoke, then full live E2E.
+          pytest tests/tools/test_floci_e2e.py -m floci -k "not mocked_runner" --maxfail=1 -q
+          pytest tests/tools/test_floci_cdk_deploy.py -m floci --maxfail=1 -q
+          pytest tests/tools/test_floci_live_e2e_full.py -m floci --maxfail=1 -q
+          pytest tests/tools/test_floci_e2e.py -m floci -k "mocked_runner" --maxfail=1 -q
 
   credential-rotation-tests:
     name: Credential Rotation Tests

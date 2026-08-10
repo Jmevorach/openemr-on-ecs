@@ -341,6 +341,38 @@ def test_floci_mocked_runner_e2e(
     monkeypatch.setattr(LiveE2EAws, "cleanup_owned_log_groups", lambda self, *_args, **_kwargs: 0)
     monkeypatch.setattr(LiveE2EAws, "owned_rds_cluster_identifiers", lambda self, *_args, **_kwargs: ())
 
+    def floci_wait_for_stack_deleted(
+        self: LiveE2EAws,
+        stack_name_or_id: str,
+        *,
+        timeout_seconds: float,
+        poll_seconds: float,
+    ) -> None:
+        import time
+
+        deadline = time.monotonic() + max(timeout_seconds, 30.0)
+        while time.monotonic() < deadline:
+            stack = self.describe_stack(stack_name_or_id)
+            if stack is None:
+                return
+            status = str(stack.get("StackStatus", ""))
+            if status in {"DELETE_COMPLETE", "DELETE_FAILED"}:
+                if status == "DELETE_COMPLETE" or self.describe_stack(stack_name_or_id) is None:
+                    return
+                if status == "DELETE_FAILED":
+                    # Floci sometimes leaves a terminal DELETE_FAILED marker; retry delete once.
+                    try:
+                        self.client("cloudformation").delete_stack(
+                            StackName=str(stack.get("StackId") or stack_name_or_id)
+                        )
+                    except Exception:
+                        pass
+            time.sleep(max(poll_seconds, 0.2))
+        if self.describe_stack(stack_name_or_id) is not None:
+            raise ToolError(f"Stack still exists after {timeout_seconds:g} seconds")
+
+    monkeypatch.setattr(LiveE2EAws, "wait_for_stack_deleted", floci_wait_for_stack_deleted)
+
     preflight_path = runner.preflight(
         approved_account=seeded_world["account_id"],
         region=DEFAULT_REGION,
