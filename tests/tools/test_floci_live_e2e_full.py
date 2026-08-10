@@ -13,6 +13,7 @@ import pytest
 from tools.floci_cdk.deploy import bootstrap as floci_bootstrap
 from tools.live_e2e.aws import LiveE2EAws
 from tools.live_e2e.emulator import FLOCI_E2E_ENVIRONMENT
+from tools.live_e2e.floci_images import ensure_floci_runtime_images
 from tools.live_e2e.floci_seed import (
     DEFAULT_ACCOUNT_ID,
     DEFAULT_REGION,
@@ -46,6 +47,10 @@ def floci_container() -> Iterator[Any]:
         pytest.skip(f"testcontainers-floci is not installed: {exc}")
 
     try:
+        # Floci starts RDS/ElastiCache sidecar containers via the host Docker
+        # socket. Pre-load images it will request (Aurora engine versions are
+        # not published as Docker Hub tags).
+        ensure_floci_runtime_images()
         # Avoid with_dedicated_network(): Floci Lambda custom resources fail to
         # attach when the emulator is isolated on a disposable Docker network.
         container_builder = (

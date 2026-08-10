@@ -23,9 +23,9 @@ The `Floci Live E2E Emulation` job in `.github/workflows/ci.yml`:
    stubbed
 6. Runs a real pinned-CDK smoke lifecycle against Floci (`tools/floci_cdk`):
    `cdk bootstrap` → `cdk deploy` → `cdk destroy`
-7. Runs the **full guarded live E2E runner** against Floci: real bootstrap,
-   OpenEMR E2E stack synth/diff/deploy through the pinned CDK CLI, emulated
-   post-deploy validation, and owned-stack destroy
+7. Runs the full guarded live E2E runner against Floci: real bootstrap, OpenEMR
+   E2E stack synth/diff/deploy through the pinned CDK CLI, emulated post-deploy
+   validation, and owned-stack destroy
 
 GitHub Actions never invokes `python -m tools.live_e2e preflight|run|cleanup`
 as a workflow step; the Floci job drives the same runner through pytest.
@@ -63,24 +63,29 @@ export AWS_SECRET_ACCESS_KEY=test
 - Emulator `UnknownOperationException` responses on read probes (for example EFS)
   are recorded as Floci-emulated passes instead of failing preflight
 
-## Limits
+## Runtime images
 
-The full Floci live E2E path deploys the real OpenEMR E2E stack through CDK.
-Post-deploy validation is Floci-aware: it still requires CloudFormation
-`CREATE_COMPLETE`, ownership markers, and the expected resource types, but it
-does not require a publicly reachable OpenEMR HTTPS endpoint. Emulator gaps in
-individual read APIs are reported as Floci-emulated passes.
+Floci starts real MySQL/Valkey containers through the host Docker socket. For
+Aurora MySQL it derives the image tag from `EngineVersion`, so
+`8.0.mysql_aurora.3.12.0` becomes `mysql:8.0.mysql_aurora.3.12.0`. That tag is
+not published on Docker Hub.
+
+Before the full live E2E path runs, `tools.live_e2e.floci_images` pulls
+`mysql:8.0` (and Valkey), then retags MySQL to the Aurora engine tag Floci will
+request. CI also runs that prep step explicitly so the host daemon already has
+the images when Floci starts sidecars.
+
+## Limits
 
 When `OPENEMR_FLOCI_E2E=1` is set, the runner synthesizes with
 `live_e2e_emulated=true` and applies Floci-only stack shims:
 
 - Skip AWS Backup (Floci lacks AWS Backup managed IAM policies; CDK selections
   always attach those ARNs)
-- Disable S3 `AutoDeleteObjects` custom resources (Floci Lambda networking
-  currently fails for those handlers)
+- Disable S3 `AutoDeleteObjects` custom resources (Floci Lambda networking gaps)
 
-Real AWS live E2E keeps Backup and S3 auto-delete behavior unchanged.
-
-If Floci cannot provision a required resource type, deploy fails and CI fails —
-that is intentional. An explicitly approved live AWS run remains the fidelity
-bar for production-like HTTPS, ECS health, and quota behavior.
+Post-deploy validation is Floci-aware: it still requires CloudFormation
+`CREATE_COMPLETE`, ownership markers, and the expected resource types, but it
+does not require a publicly reachable OpenEMR HTTPS endpoint. An explicitly
+approved live AWS run remains the fidelity bar for production-like HTTPS, ECS
+health, and quota behavior.

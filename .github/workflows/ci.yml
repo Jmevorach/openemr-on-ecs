@@ -76,7 +76,7 @@ jobs:
   floci-e2e:
     name: Floci Live E2E Emulation
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 40
 
     steps:
       - name: Checkout repository
@@ -109,12 +109,21 @@ jobs:
       - name: Pull Floci image
         run: docker pull floci/floci:1.6.0
 
+      - name: Prepare Floci RDS/ElastiCache runtime images
+        run: |
+          # Floci maps Aurora EngineVersion onto a Docker tag that Docker Hub does
+          # not publish. Pull MySQL/Valkey and retag so Floci can start sidecars.
+          python - <<'PY'
+          from tools.live_e2e.floci_images import ensure_floci_runtime_images
+          print("prepared:", ", ".join(ensure_floci_runtime_images()))
+          PY
+
       - name: Execute Floci integration suite
         env:
           OPENEMR_FLOCI_IMAGE: floci/floci:1.6.0
           OPENEMR_FLOCI_E2E: "1"
         run: |
-          # Adapter/ownership tests first, then real CDK smoke, then full live E2E.
+          # Adapter/ownership, CDK smoke, full live E2E runner, then mocked runner.
           pytest tests/tools/test_floci_e2e.py -m floci -k "not mocked_runner" --maxfail=1 -q
           pytest tests/tools/test_floci_cdk_deploy.py -m floci --maxfail=1 -q
           pytest tests/tools/test_floci_live_e2e_full.py -m floci --maxfail=1 -q
