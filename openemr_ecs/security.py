@@ -727,7 +727,8 @@ class SecurityComponents:
         container_port: int,
         lambda_python_runtime: _lambda.Runtime,
         number_of_days_to_regenerate_ssl_materials: int,
-    ) -> _lambda.Function:
+        context: Optional[dict] = None,
+    ) -> Optional[_lambda.Function]:
         """Define tasks, lambdas, and schedules that refresh internal TLS materials.
 
         Args:
@@ -740,10 +741,12 @@ class SecurityComponents:
             container_port: Container port
             lambda_python_runtime: Lambda Python runtime
             number_of_days_to_regenerate_ssl_materials: Days between SSL regeneration
+            context: Optional CDK context; emulated live E2E skips TriggerFunction
 
         Returns:
-            The one-time SSL materials creation Lambda function
+            The one-time SSL materials creation Lambda function, or None when skipped
         """
+        context = context or {}
         # Create generate SSL materials task definition
         create_ssl_materials_task = ecs.FargateTaskDefinition(
             self.scope,
@@ -868,7 +871,13 @@ class SecurityComponents:
             targets=[event_targets.LambdaFunction(create_ssl_materials_lambda)],
         )
 
-        # Create one-time SSL setup Lambda (runs before OpenEMR containers start)
+        # Create one-time SSL setup Lambda (runs before OpenEMR containers start).
+        # CDK TriggerFunction uses an HTTPS custom-resource provider that fails
+        # against Floci's HTTP endpoint (TLS EPROTO), so skip it when emulated.
+        if is_true(context.get("live_e2e_emulated")):
+            self.one_time_create_ssl_materials_lambda = None
+            return None
+
         self.one_time_create_ssl_materials_lambda = triggers.TriggerFunction(
             self.scope,
             "OneTimeSSLSetup",

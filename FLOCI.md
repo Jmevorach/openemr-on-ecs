@@ -84,6 +84,8 @@ When `OPENEMR_FLOCI_E2E=1` is set, the runner synthesizes with
 - Skip AWS Backup (Floci lacks AWS Backup managed IAM policies; CDK selections
   always attach those ARNs)
 - Disable S3 `AutoDeleteObjects` custom resources (Floci Lambda networking gaps)
+- Skip `OneTimeSSLSetup` CDK `TriggerFunction` (its HTTPS custom-resource
+  provider fails against Floci's HTTP endpoint with TLS EPROTO)
 
 Post-deploy validation is Floci-aware: it still requires CloudFormation
 `CREATE_COMPLETE`, ownership markers, and the expected resource types, but it

@@ -392,6 +392,7 @@ class OpenemrEcsStack(Stack):
             self.container_port,
             self.lambda_python_runtime,
             self.number_of_days_to_regenerate_ssl_materials,
+            context,
         )
         self.efs_only_security_group = security.efs_only_security_group
 
