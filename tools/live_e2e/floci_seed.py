@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import Any
 
 import boto3
@@ -77,6 +78,7 @@ def seed_owned_stack(
     run_id: str,
     region: str = DEFAULT_REGION,
     application_url: str = "https://openemr.e2e.floci.test/",
+    wait_seconds: float = 30.0,
 ) -> str:
     """Create a minimal owned CloudFormation stack for cleanup/ownership tests."""
 
@@ -102,7 +104,11 @@ def seed_owned_stack(
         code = str(exc.response.get("Error", {}).get("Code", ""))
         if code not in {"AlreadyExistsException", "ValidationError"}:
             raise
+    deadline = time.monotonic() + wait_seconds
     stack = cfn.describe_stacks(StackName=stack_name)["Stacks"][0]
+    while str(stack.get("StackStatus", "")).endswith("_IN_PROGRESS") and time.monotonic() < deadline:
+        time.sleep(0.2)
+        stack = cfn.describe_stacks(StackName=stack_name)["Stacks"][0]
     return str(stack["StackId"])
 
 

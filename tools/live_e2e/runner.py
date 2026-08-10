@@ -989,11 +989,11 @@ class LiveE2ERunner:
         endpoint_url = resolve_emulator_endpoint_url()
         if not is_floci_e2e_enabled(endpoint_url):
             return {}
-        assert_safe_emulator_endpoint(endpoint_url)
+        safe_endpoint = assert_safe_emulator_endpoint(endpoint_url)
         access_key = os.environ.get("AWS_ACCESS_KEY_ID", "").strip() or "test"
         secret_key = os.environ.get("AWS_SECRET_ACCESS_KEY", "").strip() or "test"
-        env = {
-            "AWS_ENDPOINT_URL": endpoint_url,
+        env: dict[str, str] = {
+            "AWS_ENDPOINT_URL": safe_endpoint,
             "AWS_ACCESS_KEY_ID": access_key,
             "AWS_SECRET_ACCESS_KEY": secret_key,
             "CDK_DISABLE_CLI_TELEMETRY": "true",

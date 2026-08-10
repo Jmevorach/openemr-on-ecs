@@ -369,6 +369,9 @@ def test_floci_mocked_runner_e2e(
         cleanup_timeout_seconds=60,
         poll_seconds=0.5,
     )
-    assert result.status == "passed"
+    assert result.status == "passed", (
+        f"status={result.status} failure_phase={result.failure_phase} "
+        f"cleanup={result.cleanup_status} notes={result.notes}"
+    )
     assert result.cleanup_status in {"complete", "stack-deleted-with-expected-residuals", "not-required"}
     assert _adapter(floci_session, floci_endpoint).describe_stack(name) is None
