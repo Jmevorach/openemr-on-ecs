@@ -339,7 +339,13 @@ def test_floci_mocked_runner_e2e(
     monkeypatch.setattr(LiveE2EAws, "bootstrap_asset_residuals", lambda self, _dir: ())
     monkeypatch.setattr(LiveE2EAws, "residual_resources", lambda self, _run_id: ())
     monkeypatch.setattr(LiveE2EAws, "cleanup_owned_log_groups", lambda self, *_args, **_kwargs: 0)
-    monkeypatch.setattr(LiveE2EAws, "owned_rds_cluster_identifiers", lambda self, *_args, **_kwargs: ())
+    # Fixture stack has no real RDS; still record a durable identifier so cleanup
+    # inventory rules match production (stack_id_hash implies RDS was inventoried).
+    monkeypatch.setattr(
+        LiveE2EAws,
+        "owned_rds_cluster_identifiers",
+        lambda self, *_args, **_kwargs: ("floci-mock-db",),
+    )
 
     preflight_path = runner.preflight(
         approved_account=seeded_world["account_id"],
@@ -374,8 +380,7 @@ def test_floci_mocked_runner_e2e(
     if state_path.is_file():
         state = json.loads(state_path.read_text(encoding="utf-8"))
         failure_detail = (
-            f" failure_type={state.get('failure_type')!r}"
-            f" failure_detail={state.get('failure_detail')!r}"
+            f" failure_type={state.get('failure_type')!r}" f" failure_detail={state.get('failure_detail')!r}"
         )
     assert result.status == "passed", (
         f"status={result.status} failure_phase={result.failure_phase} "
