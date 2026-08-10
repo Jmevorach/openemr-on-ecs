@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from typing import Any, Iterator
@@ -19,6 +20,7 @@ from tools.live_e2e.floci_seed import (
     operator_session,
     seed_live_e2e_world,
 )
+from tools.live_e2e.models import RunResult
 from tools.live_e2e.runner import (
     ACCOUNT_CONFIRMATION,
     APPROVAL_ENVIRONMENT,
@@ -158,9 +160,9 @@ def test_floci_full_live_e2e_runner(
         confirm_destroy=DESTROY_CONFIRMATION,
         confirm_costs=True,
         require_tty=False,
-        deploy_timeout_seconds=45 * 60,
-        readiness_timeout_seconds=10 * 60,
-        cleanup_timeout_seconds=30 * 60,
+        deploy_timeout_seconds=25 * 60,
+        readiness_timeout_seconds=5 * 60,
+        cleanup_timeout_seconds=10 * 60,
         poll_seconds=5,
     )
 
@@ -169,10 +171,37 @@ def test_floci_full_live_e2e_runner(
         "stack-deleted-with-expected-residuals",
         "not-required",
     }, result.cleanup_status
-    assert result.status == "passed", (
-        f"Floci live E2E failed: status={result.status} "
-        f"failure_phase={result.failure_phase} cleanup={result.cleanup_status}"
-    )
+    assert result.status == "passed", _floci_failure_message(run_id, result)
 
     adapter = aws_factory(region=DEFAULT_REGION)
     assert adapter.describe_stack(name) is None
+
+
+def _floci_failure_message(run_id: str, result: RunResult) -> str:
+    """Surface state + CDK log tails when the Floci full runner fails in CI."""
+
+    parts = [
+        f"Floci live E2E failed: status={result.status} "
+        f"failure_phase={result.failure_phase} cleanup={result.cleanup_status}"
+    ]
+    run_dir = REPO_ROOT / ".live-e2e" / "runs" / run_id
+    state_path = run_dir / "state.json"
+    if state_path.is_file():
+        try:
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            state = {}
+        detail = state.get("failure_detail")
+        if detail:
+            parts.append(f"failure_detail={detail}")
+    for name in ("publish-assets.log", "deploy.log", "synth.log"):
+        path = run_dir / name
+        if not path.is_file():
+            continue
+        try:
+            lines = [line for line in path.read_text(encoding="utf-8", errors="replace").splitlines() if line.strip()]
+        except OSError:
+            continue
+        if lines:
+            parts.append(f"--- {name} (tail) ---\n" + "\n".join(lines[-40:]))
+    return "\n".join(parts)

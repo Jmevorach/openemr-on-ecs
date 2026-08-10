@@ -602,7 +602,7 @@ class LiveE2ERunner:
                 )
             )
             if not asset_pipeline.ok:
-                raise ToolError("CDK asset build or publication failed")
+                raise ToolError(_cdk_failure_message(run_dir, "publish-assets", "CDK asset build or publication failed"))
 
             deploy = self._cdk_command(
                 cdk_command=str(preflight["cdk_command"]),
@@ -629,7 +629,7 @@ class LiveE2ERunner:
                 stack_status = str(stack.get("StackStatus", "unknown"))
                 self._update_state(run_id, {"stack_id_hash": fingerprint(stack_id), "stack_status": stack_status})
             if not deploy.ok:
-                raise ToolError("CDK deployment command failed")
+                raise ToolError(_cdk_failure_message(run_dir, "deploy", "CDK deployment command failed"))
             if stack is None or stack_id is None:
                 raise ToolError("CDK reported success but the stack does not exist")
 
@@ -1708,6 +1708,24 @@ def _repository_slug(remote_url: str) -> str:
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", slug):
         raise ToolError("Origin repository slug is invalid")
     return slug
+
+
+def _cdk_failure_message(run_dir: Path, operation: str, summary: str) -> str:
+    """Include a short owner-only CDK log tail so CI failures are diagnosable."""
+
+    log_path = run_dir / f"{operation}.log"
+    relative = f".live-e2e/runs/{run_dir.name}/{operation}.log"
+    if not log_path.is_file() or log_path.is_symlink():
+        return f"{summary}; inspect {relative}"
+    try:
+        text = redact_text(log_path.read_text(encoding="utf-8", errors="replace"))
+    except OSError:
+        return f"{summary}; inspect {relative}"
+    lines = [line for line in text.splitlines() if line.strip()]
+    tail = "\n".join(lines[-40:])
+    if not tail:
+        return f"{summary}; inspect {relative}"
+    return f"{summary}; inspect {relative}\n{tail}"
 
 
 def _docker_build_duration(path: Path) -> float:

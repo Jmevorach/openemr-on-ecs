@@ -76,7 +76,7 @@ jobs:
   floci-e2e:
     name: Floci Live E2E Emulation
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 45
 
     steps:
       - name: Checkout repository
@@ -91,6 +91,14 @@ jobs:
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ env.NODE_VERSION }}
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
+        with:
+          platforms: arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
       - name: Install dependencies
         run: |
@@ -111,6 +119,17 @@ jobs:
           pytest tests/tools/test_floci_cdk_deploy.py -m floci --maxfail=1 -q
           pytest tests/tools/test_floci_live_e2e_full.py -m floci --maxfail=1 -q
           pytest tests/tools/test_floci_e2e.py -m floci -k "mocked_runner" --maxfail=1 -q
+
+      - name: Upload Floci live E2E diagnostics
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: floci-live-e2e-diagnostics
+          path: |
+            .live-e2e/runs/**
+            .live-e2e/preflight/**
+          if-no-files-found: ignore
+          retention-days: 7
 
   credential-rotation-tests:
     name: Credential Rotation Tests
