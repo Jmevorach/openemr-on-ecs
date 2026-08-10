@@ -96,10 +96,12 @@ Run the primary Python suite:
   -q
 ```
 
-Run Floci-backed live E2E emulation tests (Docker required):
+Run Floci-backed live E2E emulation and CDK deploy/destroy tests (Docker +
+`npm ci` required):
 
 ```bash
-.venv/bin/pytest tests/tools/test_floci_e2e.py -m floci -q
+npm ci
+.venv/bin/pytest tests/tools/test_floci_e2e.py tests/tools/test_floci_cdk_deploy.py -m floci -q
 ```
 
 See [FLOCI.md](FLOCI.md) for the emulator safety model and coverage limits.

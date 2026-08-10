@@ -32,8 +32,13 @@ def seed_live_e2e_world(
     bootstrap_stack_name: str = DEFAULT_BOOTSTRAP_STACK,
     qualifier: str = DEFAULT_QUALIFIER,
     operator_user: str = DEFAULT_OPERATOR_USER,
+    include_bootstrap_fixture: bool = True,
 ) -> dict[str, str]:
-    """Create bootstrap stack, hosted zone, and CDK roles required by adapter.preflight."""
+    """Create bootstrap stack, hosted zone, and CDK roles required by adapter.preflight.
+
+    Set ``include_bootstrap_fixture=False`` when a real ``cdk bootstrap`` will create
+    the toolkit stack (Floci CDK deploy/destroy smoke).
+    """
 
     cfn = boto_client(session, "cloudformation", endpoint_url=endpoint_url, region=region)
     route53 = boto_client(session, "route53", endpoint_url=endpoint_url, region=region)
@@ -41,13 +46,15 @@ def seed_live_e2e_world(
 
     operator = _ensure_operator_user(iam, username=operator_user)
     hosted_zone_id = _ensure_hosted_zone(route53, route53_domain)
-    _ensure_bootstrap_stack(cfn, bootstrap_stack_name, qualifier=qualifier)
-    role_names = _ensure_bootstrap_roles(
-        iam,
-        account_id=account_id,
-        region=region,
-        qualifier=qualifier,
-    )
+    role_names: list[str] = []
+    if include_bootstrap_fixture:
+        _ensure_bootstrap_stack(cfn, bootstrap_stack_name, qualifier=qualifier)
+        role_names = _ensure_bootstrap_roles(
+            iam,
+            account_id=account_id,
+            region=region,
+            qualifier=qualifier,
+        )
     return {
         "account_id": account_id,
         "region": region,

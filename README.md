@@ -348,6 +348,7 @@ Before starting, you'll need:
 ├── KNOWLEDGE-MCP.md                          # Read-only repository MCP setup and safety
 ├── LIVE-E2E.md                               # Approval-gated real deployment test
 ├── FLOCI.md                                  # Floci-emulated live E2E CI coverage
+├── tools/floci_cdk/                          # Minimal CDK smoke app for Floci deploy/destroy
 ├── MAINTAINERS.md                            # Audit, validation, MCP, and operations index
 ├── DETAILS.md                               # Deep configuration details
 ├── ARCHITECTURE.md                          # Architecture deep dive
