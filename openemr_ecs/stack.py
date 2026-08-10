@@ -365,11 +365,14 @@ class OpenemrEcsStack(Stack):
             ec2.Peer.any_ipv4(), ec2.Port.tcp(443), "Allow HTTPS egress for AWS services and certificate downloads"
         )
 
-        # Create backup plan
-        storage.create_backup_plan(
-            self.db_instance, self.file_system_for_sites_folder, self.file_system_for_ssl_folder, context
-        )
-        self.backup_vault = storage.backup_vault
+        # Create backup plan (skipped on Floci: AWS Backup managed IAM policies are not seeded)
+        if is_true(context.get("live_e2e_emulated")):
+            self.backup_vault = None
+        else:
+            storage.create_backup_plan(
+                self.db_instance, self.file_system_for_sites_folder, self.file_system_for_ssl_folder, context
+            )
+            self.backup_vault = storage.backup_vault
 
         # Create ECS cluster (required for OpenEMR)
         ecs_result = compute.create_ecs_cluster(self.vpc, self.db_instance, context, self.region)
