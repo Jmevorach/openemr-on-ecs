@@ -264,8 +264,21 @@ def test_floci_mocked_runner_e2e(
                 },
                 "Outputs": {"LiveE2ERunId": {"Value": run_id}},
             }
-            (out / f"{name}.template.json").write_text(json.dumps(template), encoding="utf-8")
-            (out / "manifest.json").write_text(json.dumps({"artifacts": {}}), encoding="utf-8")
+            template_file = f"{name}.template.json"
+            (out / template_file).write_text(json.dumps(template), encoding="utf-8")
+            (out / "manifest.json").write_text(
+                json.dumps(
+                    {
+                        "artifacts": {
+                            name: {
+                                "type": "aws:cloudformation:stack",
+                                "properties": {"templateFile": template_file},
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
             (out / f"{name}.assets.json").write_text(json.dumps({"files": {}, "dockerImages": {}}), encoding="utf-8")
         elif operation == "deploy":
             seed_owned_stack(
@@ -279,6 +292,13 @@ def test_floci_mocked_runner_e2e(
 
     monkeypatch.setattr(runner, "_cdk_command", fake_cdk_command)
     monkeypatch.setattr("tools.live_e2e.runner._validate_e2e_template", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        "tools.live_e2e.runner._assembly_template",
+        lambda *_args, **_kwargs: {
+            "Resources": {},
+            "Outputs": {"LiveE2ERunId": {"Value": run_id}, "OpenEMRVersion": {"Value": "8.2.0"}},
+        },
+    )
     monkeypatch.setattr(
         "tools.live_e2e.runner._assembly_versions",
         lambda *_args, **_kwargs: {
