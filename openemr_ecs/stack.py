@@ -193,10 +193,11 @@ class OpenemrEcsStack(Stack):
         )
 
         # Create storage infrastructure
-        self.elb_log_bucket = storage.create_elb_log_bucket()
+        self.elb_log_bucket = storage.create_elb_log_bucket(context)
         self.import_staging_bucket = storage.create_import_staging_bucket(
             self.elb_log_bucket,
             self.kms_keys.s3_key,
+            context,
         )
 
         if is_true(context.get("enable_long_term_cloudtrail_monitoring")):

@@ -20,7 +20,7 @@ from constructs import Construct
 
 from .kms_keys import KmsKeys
 from .nag_suppressions import acknowledge_findings
-from .utils import get_resource_suffix, is_true
+from .utils import get_resource_suffix, is_true, s3_auto_delete_objects
 
 
 class StorageComponents:
@@ -52,7 +52,7 @@ class StorageComponents:
         self.backup_vault: Optional[backup.BackupVault] = None
         self.import_staging_bucket: Optional[s3.Bucket] = None
 
-    def create_elb_log_bucket(self) -> s3.Bucket:
+    def create_elb_log_bucket(self, context: Optional[dict] = None) -> s3.Bucket:
         """Create S3 bucket for Application Load Balancer access logs.
 
         Note: ALB access logging does not support KMS encryption, only SSE-S3.
@@ -61,11 +61,12 @@ class StorageComponents:
         Returns:
             The created S3 bucket
         """
+        auto_delete = s3_auto_delete_objects(context)
         # Create server access log bucket first (also SSE-S3 since it's for ALB logs)
         elb_access_log_bucket = s3.Bucket(
             self.scope,
             "elb-access-logs-bucket",
-            auto_delete_objects=True,
+            auto_delete_objects=auto_delete,
             removal_policy=RemovalPolicy.DESTROY,
             block_public_access=s3.BlockPublicAccess.BLOCK_ALL,
             encryption=s3.BucketEncryption.S3_MANAGED,  # ALB requires SSE-S3, not KMS
@@ -109,7 +110,7 @@ class StorageComponents:
         self.elb_log_bucket = s3.Bucket(
             self.scope,
             "elb-logs-bucket",
-            auto_delete_objects=True,
+            auto_delete_objects=auto_delete,
             removal_policy=RemovalPolicy.DESTROY,
             block_public_access=s3.BlockPublicAccess.BLOCK_ALL,
             encryption=s3.BucketEncryption.S3_MANAGED,  # ALB requires SSE-S3, not KMS
@@ -156,13 +157,14 @@ class StorageComponents:
         self,
         access_log_bucket: s3.IBucket,
         encryption_key: kms.IKey,
+        context: Optional[dict] = None,
     ) -> s3.Bucket:
         """Create a short-lived, private KMS-encrypted import staging bucket."""
 
         self.import_staging_bucket = s3.Bucket(
             self.scope,
             "OpenEMRImportStagingBucket",
-            auto_delete_objects=True,
+            auto_delete_objects=s3_auto_delete_objects(context),
             removal_policy=RemovalPolicy.DESTROY,
             block_public_access=s3.BlockPublicAccess.BLOCK_ALL,
             encryption=s3.BucketEncryption.KMS,

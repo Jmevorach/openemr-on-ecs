@@ -71,12 +71,15 @@ Post-deploy validation is Floci-aware: it still requires CloudFormation
 does not require a publicly reachable OpenEMR HTTPS endpoint. Emulator gaps in
 individual read APIs are reported as Floci-emulated passes.
 
-Floci's IAM catalog does not include AWS Backup managed policies
-(`AWSBackupServiceRolePolicyForBackup` / `...ForRestores`), and CDK's Backup
-selection API always attaches those ARNs. When `OPENEMR_FLOCI_E2E=1` is set,
-the runner synthesizes with `live_e2e_emulated=true` and skips AWS Backup
-resources for that disposable stack. Real AWS live E2E still creates the
-Backup vault/plan.
+When `OPENEMR_FLOCI_E2E=1` is set, the runner synthesizes with
+`live_e2e_emulated=true` and applies Floci-only stack shims:
+
+- Skip AWS Backup (Floci lacks AWS Backup managed IAM policies; CDK selections
+  always attach those ARNs)
+- Disable S3 `AutoDeleteObjects` custom resources (Floci Lambda networking
+  currently fails for those handlers)
+
+Real AWS live E2E keeps Backup and S3 auto-delete behavior unchanged.
 
 If Floci cannot provision a required resource type, deploy fails and CI fails —
 that is intentional. An explicitly approved live AWS run remains the fidelity

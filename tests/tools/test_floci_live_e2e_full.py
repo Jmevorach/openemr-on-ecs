@@ -46,11 +46,11 @@ def floci_container() -> Iterator[Any]:
         pytest.skip(f"testcontainers-floci is not installed: {exc}")
 
     try:
+        # Avoid with_dedicated_network(): Floci Lambda custom resources fail to
+        # attach when the emulator is isolated on a disposable Docker network.
         container_builder = (
             FlociContainer(image=FLOCI_IMAGE).with_account_id(DEFAULT_ACCOUNT_ID).with_region(DEFAULT_REGION)
         )
-        if hasattr(container_builder, "with_dedicated_network"):
-            container_builder = container_builder.with_dedicated_network()
         with container_builder as container:
             yield container
     except Exception as exc:  # pragma: no cover
