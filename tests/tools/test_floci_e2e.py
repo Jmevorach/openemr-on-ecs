@@ -369,9 +369,17 @@ def test_floci_mocked_runner_e2e(
         cleanup_timeout_seconds=180,
         poll_seconds=0.5,
     )
+    state_path = root / ".live-e2e" / "runs" / run_id / "state.json"
+    failure_detail = ""
+    if state_path.is_file():
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        failure_detail = (
+            f" failure_type={state.get('failure_type')!r}"
+            f" failure_detail={state.get('failure_detail')!r}"
+        )
     assert result.status == "passed", (
         f"status={result.status} failure_phase={result.failure_phase} "
-        f"cleanup={result.cleanup_status} notes={result.notes}"
+        f"cleanup={result.cleanup_status} notes={result.notes}{failure_detail}"
     )
     assert result.cleanup_status in {"complete", "stack-deleted-with-expected-residuals", "not-required"}
     assert _adapter(floci_session, floci_endpoint).describe_stack(name) is None

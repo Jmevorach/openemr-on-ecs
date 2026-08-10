@@ -798,7 +798,7 @@ class LiveE2EAws:
                         self.client("cloudformation").delete_stack(
                             StackName=str(raw.get("StackId") or stack_name_or_id)
                         )
-                    except (BotoCoreError, ClientError):
+                    except BotoCoreError, ClientError:
                         pass
                     time.sleep(max(poll_seconds, 0.2))
                     continue
