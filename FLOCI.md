@@ -15,9 +15,9 @@ The `Floci Live E2E Emulation` job in `.github/workflows/ci.yml`:
 1. Starts `floci/floci:1.6.0` through Testcontainers
 2. Seeds STS identity, a dedicated Route 53 zone, CDK bootstrap stack, and
    bootstrap IAM roles
-3. Runs `LiveE2EAws.preflight` against the emulator (service-quotas and IAM
-   policy simulation are Floci-emulated shims because those APIs are absent or
-   incomplete)
+3. Runs `LiveE2EAws.preflight` against the emulator (service-quotas, IAM policy
+   simulation, and emulator-unsupported read APIs such as EFS are Floci-emulated
+   shims)
 4. Verifies owned-stack cleanup refuses foreign ownership markers
 5. Runs a mocked runner path (`preflight` → approved `run` → cleanup) with CDK
    deploy/validate stubbed and CloudFormation state held in Floci
@@ -49,6 +49,8 @@ export AWS_SECRET_ACCESS_KEY=test
 - Real AWS hostnames are rejected
 - Emulated mode never contacts `service-quotas`; write-permission simulation is
   replaced by IAM role existence checks after successful `AssumeRole`
+- Emulator `UnknownOperationException` responses on read probes (for example EFS)
+  are recorded as Floci-emulated passes instead of failing preflight
 
 ## Limits
 

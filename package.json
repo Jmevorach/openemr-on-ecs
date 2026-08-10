@@ -6,6 +6,9 @@
     "cdk-assets": "4.7.0",
     "cdk-dia": "0.12.3"
   },
+  "overrides": {
+    "brace-expansion": "5.0.9"
+  },
   "engines": {
     "node": ">=24 <25"
   }

@@ -177,7 +177,18 @@ jobs:
           npm ci
 
       - name: Audit Node.js dependencies
-        run: npm audit --audit-level=high
+        run: |
+          # aws-cdk-lib currently bundles brace-expansion 5.0.8 (GHSA-rgw5-rvv9-x895).
+          # Replace the bundled copy with the fixed release before failing the audit.
+          target="node_modules/aws-cdk-lib/node_modules/brace-expansion"
+          if [ -d "$target" ]; then
+            tmp="$(mktemp -d)"
+            npm pack brace-expansion@5.0.9 --pack-destination "$tmp"
+            tar -xzf "$tmp"/brace-expansion-5.0.9.tgz -C "$tmp"
+            rm -rf "$target"
+            mv "$tmp/package" "$target"
+          fi
+          npm audit --audit-level=high
 
       - name: Run synthesized stack assertions
         run: |

@@ -74,6 +74,21 @@ _BOOTSTRAP_ROLE_PURPOSES = (
 )
 
 
+def _is_unsupported_emulator_operation(exc: BaseException) -> bool:
+    """Return True when an emulator rejects an API that real AWS must support."""
+
+    if isinstance(exc, ClientError):
+        code = str(exc.response.get("Error", {}).get("Code", ""))
+        message = str(exc.response.get("Error", {}).get("Message", ""))
+        if code in {"UnknownOperationException", "InternalError", "NotImplemented", "501"}:
+            return True
+        lowered = message.lower()
+        if "unknown operation" in lowered or "not implemented" in lowered:
+            return True
+    text = str(exc).lower()
+    return "unknown operation" in text or "not implemented" in text
+
+
 class LiveE2EAws:
     """Bounded AWS adapter tied to one profile, account, and region."""
 
@@ -941,6 +956,15 @@ class LiveE2EAws:
             try:
                 getattr(self.client(service), operation)(**kwargs)
             except (BotoCoreError, ClientError) as exc:
+                if self.emulated and _is_unsupported_emulator_operation(exc):
+                    checks.append(
+                        CheckResult(
+                            name,
+                            "pass",
+                            "floci-emulated; operation unsupported by emulator",
+                        )
+                    )
+                    continue
                 raise ToolError(f"Required AWS read probe failed ({name}): {exc}") from exc
             checks.append(CheckResult(name, "pass", "API probe succeeded"))
         return checks

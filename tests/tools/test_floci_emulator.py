@@ -129,3 +129,56 @@ def test_emulated_quota_probes_skip_service_quotas() -> None:
     checks = adapter._quota_probes()
     assert checks
     assert all(check.status == "pass" and "floci-emulated" in check.detail for check in checks)
+
+
+def test_emulated_permission_probes_tolerate_unknown_operations() -> None:
+    from botocore.exceptions import ClientError
+
+    from tools.live_e2e.aws import LiveE2EAws
+
+    class FakeClient:
+        def list_stacks(self, **_kwargs: object) -> dict[str, list[object]]:
+            return {"StackSummaries": []}
+
+        def describe_vpcs(self, **_kwargs: object) -> dict[str, list[object]]:
+            return {"Vpcs": []}
+
+        def list_clusters(self, **_kwargs: object) -> dict[str, list[object]]:
+            return {"clusterArns": []}
+
+        def describe_db_clusters(self, **_kwargs: object) -> dict[str, list[object]]:
+            return {"DBClusters": []}
+
+        def describe_file_systems(self, **_kwargs: object) -> dict[str, list[object]]:
+            raise ClientError(
+                {
+                    "Error": {
+                        "Code": "UnknownOperationException",
+                        "Message": "Unknown operation: GET /2015-02-01/file-systems",
+                    }
+                },
+                "DescribeFileSystems",
+            )
+
+        def list_aliases(self, **_kwargs: object) -> dict[str, list[object]]:
+            return {"Aliases": []}
+
+        def list_backup_vaults(self, **_kwargs: object) -> dict[str, list[object]]:
+            return {"BackupVaultList": []}
+
+        def list_web_acls(self, **_kwargs: object) -> dict[str, list[object]]:
+            return {"WebACLs": []}
+
+    class Session:
+        def client(self, *_args: object, **_kwargs: object) -> FakeClient:
+            return FakeClient()
+
+    adapter = LiveE2EAws(
+        region="us-east-1",
+        session=Session(),
+        endpoint_url="http://127.0.0.1:4566",
+        emulated=True,
+    )
+    checks = {check.name: check.detail for check in adapter._permission_probes()}
+    assert "floci-emulated" in checks["efs-read"]
+    assert checks["cloudformation-read"] == "API probe succeeded"
