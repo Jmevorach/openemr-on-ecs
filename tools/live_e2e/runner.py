@@ -165,6 +165,7 @@ class LiveE2ERunner:
                 hosted_zone_id=str(aws_facts["hosted_zone_id"]),
                 allowed_ipv4_cidr=allowed_ipv4_cidr,
                 profile=profile,
+                emulated=is_floci_e2e_enabled(resolve_emulator_endpoint_url()),
             )
             synth = self._cdk_command(
                 cdk_command=resolved_cdk_command,
@@ -519,6 +520,7 @@ class LiveE2ERunner:
             hosted_zone_id=str(preflight["hosted_zone_id"]),
             allowed_ipv4_cidr=str(preflight["allowed_ipv4_cidr"]),
             profile=str(preflight["profile"]),
+            emulated=is_floci_e2e_enabled(resolve_emulator_endpoint_url()),
         )
         if fingerprint(contexts) != preflight["context_fingerprint"]:
             raise ToolError("Preflight context fingerprint is invalid")
@@ -602,7 +604,9 @@ class LiveE2ERunner:
                 )
             )
             if not asset_pipeline.ok:
-                raise ToolError(_cdk_failure_message(run_dir, "publish-assets", "CDK asset build or publication failed"))
+                raise ToolError(
+                    _cdk_failure_message(run_dir, "publish-assets", "CDK asset build or publication failed")
+                )
 
             deploy = self._cdk_command(
                 cdk_command=str(preflight["cdk_command"]),
@@ -1340,6 +1344,7 @@ def deployment_contexts(
     hosted_zone_id: str,
     allowed_ipv4_cidr: str,
     profile: str,
+    emulated: bool = False,
 ) -> dict[str, str]:
     """Build the exact context shared by synth and deploy."""
 
@@ -1383,6 +1388,9 @@ def deployment_contexts(
             separators=(",", ":"),
         ),
     }
+    if emulated:
+        # Floci lacks several AWS managed IAM policies referenced by the stack.
+        contexts["live_e2e_emulated"] = "true"
     contexts.update(_PROFILES[profile])
     return contexts
 

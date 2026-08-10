@@ -160,9 +160,9 @@ def test_floci_full_live_e2e_runner(
         confirm_destroy=DESTROY_CONFIRMATION,
         confirm_costs=True,
         require_tty=False,
-        deploy_timeout_seconds=25 * 60,
-        readiness_timeout_seconds=5 * 60,
-        cleanup_timeout_seconds=10 * 60,
+        deploy_timeout_seconds=15 * 60,
+        readiness_timeout_seconds=3 * 60,
+        cleanup_timeout_seconds=5 * 60,
         poll_seconds=5,
     )
 
@@ -189,7 +189,7 @@ def _floci_failure_message(run_id: str, result: RunResult) -> str:
     if state_path.is_file():
         try:
             state = json.loads(state_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        except OSError, json.JSONDecodeError:
             state = {}
         detail = state.get("failure_detail")
         if detail:

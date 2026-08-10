@@ -20,7 +20,7 @@ from constructs import Construct
 
 from .kms_keys import KmsKeys
 from .nag_suppressions import acknowledge_findings
-from .utils import get_resource_suffix
+from .utils import get_resource_suffix, is_true
 
 
 class StorageComponents:
@@ -518,36 +518,64 @@ class StorageComponents:
 
         # Add resources to backup
         # Enable restore permissions by setting allow_restores=True
-        # Create IAM role for AWS Backup service
-        backup_role = iam.Role(
-            self.scope,
-            "BackupServiceRole",
-            assumed_by=iam.ServicePrincipal("backup.amazonaws.com"),
-            managed_policies=[
-                iam.ManagedPolicy.from_aws_managed_policy_name("service-role/AWSBackupServiceRolePolicyForBackup"),
-                iam.ManagedPolicy.from_aws_managed_policy_name("service-role/AWSBackupServiceRolePolicyForRestores"),
-            ],
-        )
+        # Create IAM role for AWS Backup service.
+        # Floci does not seed AWS Backup managed policies, so emulated live E2E
+        # uses an inline allow-all role instead of the AWS managed ARNs.
+        if is_true(context.get("live_e2e_emulated")):
+            backup_role = iam.Role(
+                self.scope,
+                "BackupServiceRole",
+                assumed_by=iam.ServicePrincipal("backup.amazonaws.com"),
+            )
+            backup_role.add_to_policy(
+                iam.PolicyStatement(
+                    effect=iam.Effect.ALLOW,
+                    actions=["*"],
+                    resources=["*"],
+                )
+            )
+            acknowledge_findings(
+                backup_role,
+                [
+                    {
+                        "id": "AwsSolutions-IAM5",
+                        "reason": "Emulated live E2E replaces missing AWS Backup managed policies with a disposable wildcard inline policy",
+                        "appliesTo": ["Resource::*"],
+                    },
+                ],
+            )
+        else:
+            backup_role = iam.Role(
+                self.scope,
+                "BackupServiceRole",
+                assumed_by=iam.ServicePrincipal("backup.amazonaws.com"),
+                managed_policies=[
+                    iam.ManagedPolicy.from_aws_managed_policy_name("service-role/AWSBackupServiceRolePolicyForBackup"),
+                    iam.ManagedPolicy.from_aws_managed_policy_name(
+                        "service-role/AWSBackupServiceRolePolicyForRestores"
+                    ),
+                ],
+            )
 
-        # Suppress AWS managed policy warnings for backup service role
-        acknowledge_findings(
-            backup_role,
-            [
-                {
-                    "id": "AwsSolutions-IAM4",
-                    "reason": "AWS Backup service requires AWS managed policies (AWSBackupServiceRolePolicyForBackup and AWSBackupServiceRolePolicyForRestores) to function correctly",
-                    "appliesTo": [
-                        "Policy::arn:<AWS::Partition>:iam::aws:policy/service-role/AWSBackupServiceRolePolicyForBackup",
-                        "Policy::arn:<AWS::Partition>:iam::aws:policy/service-role/AWSBackupServiceRolePolicyForRestores",
-                    ],
-                },
-                {
-                    "id": "AwsSolutions-IAM5",
-                    "reason": "AWS Backup service managed policies require wildcard permissions to backup and restore resources across services",
-                    "appliesTo": ["Resource::*"],
-                },
-            ],
-        )
+            # Suppress AWS managed policy warnings for backup service role
+            acknowledge_findings(
+                backup_role,
+                [
+                    {
+                        "id": "AwsSolutions-IAM4",
+                        "reason": "AWS Backup service requires AWS managed policies (AWSBackupServiceRolePolicyForBackup and AWSBackupServiceRolePolicyForRestores) to function correctly",
+                        "appliesTo": [
+                            "Policy::arn:<AWS::Partition>:iam::aws:policy/service-role/AWSBackupServiceRolePolicyForBackup",
+                            "Policy::arn:<AWS::Partition>:iam::aws:policy/service-role/AWSBackupServiceRolePolicyForRestores",
+                        ],
+                    },
+                    {
+                        "id": "AwsSolutions-IAM5",
+                        "reason": "AWS Backup service managed policies require wildcard permissions to backup and restore resources across services",
+                        "appliesTo": ["Resource::*"],
+                    },
+                ],
+            )
 
         # Add resources to backup plan with the custom role
         plan.add_selection(

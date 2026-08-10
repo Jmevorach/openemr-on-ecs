@@ -85,6 +85,7 @@ class OpenemrEcsStack(Stack):
             "deployment_notification_email",
             "live_e2e_run_id",
             "live_e2e_availability_zones",
+            "live_e2e_emulated",
         ]
 
         context = {key: self.node.try_get_context(key) for key in context_keys}
