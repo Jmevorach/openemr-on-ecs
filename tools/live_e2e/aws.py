@@ -773,6 +773,7 @@ class LiveE2EAws:
         """Wait until CloudFormation confirms deletion, failing on terminal errors."""
 
         deadline = time.monotonic() + timeout_seconds
+        retried_delete_failed = False
         while time.monotonic() < deadline:
             stack = self.describe_stack(stack_name_or_id)
             if stack is None:
@@ -781,9 +782,26 @@ class LiveE2EAws:
             if status == "DELETE_COMPLETE":
                 return
             if status == "DELETE_FAILED":
+                if self.emulated and not retried_delete_failed:
+                    # Floci occasionally parks stacks in DELETE_FAILED while the
+                    # underlying resources are already gone; one more delete often
+                    # clears the marker.
+                    retried_delete_failed = True
+                    try:
+                        self.client("cloudformation").delete_stack(
+                            StackName=str(stack.get("StackId") or stack_name_or_id)
+                        )
+                    except BotoCoreError, ClientError:
+                        pass
+                    time.sleep(max(poll_seconds, 0.2))
+                    continue
+                if self.emulated and self.describe_stack(stack_name_or_id) is None:
+                    return
                 reason = str(stack.get("StackStatusReason", "reason unavailable"))
                 raise ToolError(f"Stack deletion failed: {reason}")
             time.sleep(poll_seconds)
+        if self.emulated and self.describe_stack(stack_name_or_id) is None:
+            return
         raise ToolError(f"Stack still exists after {timeout_seconds:g} seconds")
 
     def residual_resources(self, run_id: str) -> tuple[ResidualResource, ...]:
