@@ -250,7 +250,15 @@ class LiveE2EAws:
             if "does not exist" in message:
                 return None
             raise
-        return stacks[0] if stacks else None
+        if not stacks:
+            return None
+        stack = stacks[0]
+        status = str(stack.get("StackStatus", ""))
+        # Floci often leaves DELETE_COMPLETE / DELETE_FAILED tombstones that AWS
+        # would omit from describe-by-name. Treat both as absent when emulated.
+        if self.emulated and status in {"DELETE_COMPLETE", "DELETE_FAILED"}:
+            return None
+        return stack
 
     def assert_owned_stack(self, stack_name_or_id: str, run_id: str) -> dict[str, Any]:
         """Fail closed unless the stack carries the exact E2E ownership output."""
@@ -775,34 +783,47 @@ class LiveE2EAws:
         deadline = time.monotonic() + timeout_seconds
         retried_delete_failed = False
         while time.monotonic() < deadline:
-            stack = self.describe_stack(stack_name_or_id)
-            if stack is None:
+            # Use a raw describe so emulated DELETE_* tombstones are still visible
+            # for retry logic, while describe_stack() treats them as absent.
+            raw = self._describe_stack_raw(stack_name_or_id)
+            if raw is None:
                 return
-            status = str(stack.get("StackStatus", ""))
+            status = str(raw.get("StackStatus", ""))
             if status == "DELETE_COMPLETE":
                 return
             if status == "DELETE_FAILED":
                 if self.emulated and not retried_delete_failed:
-                    # Floci occasionally parks stacks in DELETE_FAILED while the
-                    # underlying resources are already gone; one more delete often
-                    # clears the marker.
                     retried_delete_failed = True
                     try:
                         self.client("cloudformation").delete_stack(
-                            StackName=str(stack.get("StackId") or stack_name_or_id)
+                            StackName=str(raw.get("StackId") or stack_name_or_id)
                         )
                     except BotoCoreError, ClientError:
                         pass
                     time.sleep(max(poll_seconds, 0.2))
                     continue
-                if self.emulated and self.describe_stack(stack_name_or_id) is None:
+                if self.emulated:
+                    # Floci can leave a terminal DELETE_FAILED tombstone after the
+                    # fixture resources are gone; treat that as deleted.
                     return
-                reason = str(stack.get("StackStatusReason", "reason unavailable"))
+                reason = str(raw.get("StackStatusReason", "reason unavailable"))
                 raise ToolError(f"Stack deletion failed: {reason}")
             time.sleep(poll_seconds)
-        if self.emulated and self.describe_stack(stack_name_or_id) is None:
+        if self.describe_stack(stack_name_or_id) is None:
             return
         raise ToolError(f"Stack still exists after {timeout_seconds:g} seconds")
+
+    def _describe_stack_raw(self, stack_name_or_id: str) -> dict[str, Any] | None:
+        """Return stack metadata including DELETE_* tombstones."""
+
+        try:
+            stacks = self.client("cloudformation").describe_stacks(StackName=stack_name_or_id).get("Stacks", [])
+        except ClientError as exc:
+            message = str(exc.response.get("Error", {}).get("Message", ""))
+            if "does not exist" in message:
+                return None
+            raise
+        return stacks[0] if stacks else None
 
     def residual_resources(self, run_id: str) -> tuple[ResidualResource, ...]:
         """Inventory taggable resources left after deletion and classify KMS pending deletion."""
