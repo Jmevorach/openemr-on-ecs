@@ -556,7 +556,7 @@ def test_delete_complete_is_a_terminal_cleanup_success(monkeypatch: pytest.Monke
     adapter = LiveE2EAws(region="us-east-1", session=SimpleNamespace())
     monkeypatch.setattr(
         adapter,
-        "describe_stack",
+        "_describe_stack_raw",
         lambda _: {"StackStatus": "DELETE_COMPLETE"},
     )
     monkeypatch.setattr("tools.live_e2e.aws.time.sleep", lambda _: pytest.fail("must not sleep"))
