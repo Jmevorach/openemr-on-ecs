@@ -1329,7 +1329,9 @@ class LiveE2ERunner:
         ):
             raise ToolError("Recorded RDS cleanup inventory is malformed")
         identifiers = tuple(sorted(set(raw)))
-        if state.get("stack_id_hash") and not identifiers:
+        # Missing inventory after a stack was observed is unsafe. An explicit empty
+        # list is valid for failed creates / rollbacks that never provisioned RDS.
+        if state.get("stack_id_hash") and "rds_cluster_identifiers" not in state:
             raise ToolError("Owned stack was observed without a durable RDS cleanup inventory")
         return identifiers
 

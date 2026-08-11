@@ -1,6 +1,6 @@
 """Unit tests for utility functions."""
 
-from openemr_ecs.utils import get_resource_suffix, is_true
+from openemr_ecs.utils import get_resource_suffix, is_true, serverless_cache_name
 
 
 class TestIsTrue:
@@ -46,3 +46,18 @@ class TestGetResourceSuffix:
         """Test that default suffix is returned with empty context."""
         context = {"other_key": "value"}
         assert get_resource_suffix(context) == "default"
+
+
+class TestServerlessCacheName:
+    """Tests for ElastiCache Serverless cache name budgeting."""
+
+    def test_live_e2e_style_name_stays_within_limit(self):
+        name = serverless_cache_name("OpenemrE2E-756cf49f948c", "e2e29b8e97077")
+        assert len(name) <= 40
+        assert name[0].isalpha()
+        assert name.endswith("-e2e29b8e97077-vk")
+
+    def test_short_inputs_remain_readable(self):
+        name = serverless_cache_name("OpenemrEcsStack", "abc123")
+        assert name == "openemrecsstack-abc123-vk"
+        assert len(name) <= 40

@@ -1,6 +1,10 @@
 """Shared utility functions for the OpenEMR CDK stack."""
 
+import re
 from typing import Optional
+
+_SERVERLESS_CACHE_NAME_MAX = 40
+_SERVERLESS_CACHE_NAME_RE = re.compile(r"[^a-z0-9-]+")
 
 
 def is_true(val: Optional[str]) -> bool:
@@ -31,6 +35,31 @@ def get_resource_suffix(context: dict) -> str:
     """
     result = context.get("openemr_resource_suffix", "default")
     return str(result) if result is not None else "default"
+
+
+def serverless_cache_name(stack_name: str, suffix: str) -> str:
+    """Build an ElastiCache Serverless cache name within the 40-character limit.
+
+    Live E2E stack names plus the e2e resource suffix previously produced names
+    like ``openemre2e-756cf49f94-e2e29b8e97077-valkey`` (41 chars), which AWS
+    rejects. Prefer uniqueness from the suffix, then fill remaining budget with
+    a sanitized stack token.
+    """
+
+    safe_suffix = _SERVERLESS_CACHE_NAME_RE.sub("", str(suffix).lower()).strip("-") or "default"
+    if safe_suffix[0].isdigit():
+        safe_suffix = f"e{safe_suffix}"
+    trailer = f"-{safe_suffix}-vk"
+    if len(trailer) >= _SERVERLESS_CACHE_NAME_MAX:
+        # Pathological suffix: keep a letter prefix and truncate hard.
+        return f"e{safe_suffix}"[:_SERVERLESS_CACHE_NAME_MAX]
+
+    budget = _SERVERLESS_CACHE_NAME_MAX - len(trailer)
+    token = _SERVERLESS_CACHE_NAME_RE.sub("", str(stack_name).lower()).strip("-")
+    if not token or not token[0].isalpha():
+        token = f"o{token}" if token else "openemr"
+    token = token[:budget].strip("-") or "o"
+    return f"{token}{trailer}"
 
 
 def s3_auto_delete_objects(context: Optional[dict] = None) -> bool:
