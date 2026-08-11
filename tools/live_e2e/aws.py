@@ -1011,6 +1011,11 @@ class LiveE2EAws:
         role_arn = destination.get("assumeRoleArn")
         if not isinstance(region, str):
             region = self.region
+        if isinstance(role_arn, str) and role_arn:
+            # CDK asset manifests may leave Fn::Sub tokens unresolved after synth.
+            role_arn = role_arn.replace("${AWS::Partition}", "aws")
+            if "${" in role_arn:
+                raise ToolError(f"CDK asset assume-role ARN still contains unresolved tokens: {role_arn}")
         if not isinstance(role_arn, str) or not role_arn:
             kwargs: dict[str, Any] = {"region_name": region}
             if self.endpoint_url:
