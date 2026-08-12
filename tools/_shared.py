@@ -7,17 +7,38 @@ import json
 import os
 import re
 import secrets
+import signal
 import stat
+import subprocess
 import tempfile
+import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping, Sequence
 
 _SUPPORTS_SAFE_OPEN = hasattr(os, "O_NOFOLLOW") and os.open in os.supports_dir_fd
 
 
 class ToolError(RuntimeError):
     """Raised when a maintenance tool cannot safely complete an operation."""
+
+
+@dataclass(frozen=True)
+class CommandResult:
+    """Structured result from a bounded local command."""
+
+    argv: tuple[str, ...]
+    returncode: int
+    stdout: str
+    stderr: str
+    duration_seconds: float
+
+    @property
+    def ok(self) -> bool:
+        """Return whether the command exited successfully."""
+
+        return self.returncode == 0
 
 
 _DENIED_PARTS = {
@@ -421,6 +442,14 @@ def fingerprint(value: Any, *, length: int = 16) -> str:
     return hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()[:length]
 
 
+def hash_account_id(account_id: str) -> str:
+    """Return a stable, non-reversible account label for local checks."""
+
+    if not re.fullmatch(r"\d{12}", account_id):
+        raise ToolError("AWS account ID must contain exactly 12 digits")
+    return f"sha256:{hashlib.sha256(account_id.encode('ascii')).hexdigest()[:12]}"
+
+
 def is_sensitive_key(value: str) -> bool:
     """Return whether a structured or assignment key denotes a secret value."""
 
@@ -590,6 +619,50 @@ def atomic_write_json(path: Path, value: Any) -> None:
     """Atomically replace a deterministic JSON file."""
 
     atomic_write_text(path, f"{json.dumps(value, indent=2, sort_keys=True, ensure_ascii=False)}\n")
+
+
+def run_command(
+    argv: Sequence[str],
+    *,
+    cwd: Path,
+    timeout_seconds: float,
+    env: Mapping[str, str] | None = None,
+    umask: int | None = None,
+) -> CommandResult:
+    """Run a local command without a shell and enforce a hard timeout."""
+
+    if not argv:
+        raise ValueError("argv cannot be empty")
+    if timeout_seconds <= 0:
+        raise ValueError("timeout_seconds must be positive")
+    started = time.monotonic()
+    process = subprocess.Popen(
+        [str(part) for part in argv],
+        cwd=cwd,
+        env={**os.environ, **dict(env or {})},
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+        umask=-1 if umask is None else umask,
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=timeout_seconds)
+    except subprocess.TimeoutExpired as exc:
+        os.killpg(process.pid, signal.SIGTERM)
+        try:
+            process.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            os.killpg(process.pid, signal.SIGKILL)
+            process.communicate()
+        raise ToolError(f"Command timed out after {timeout_seconds:g}s: {' '.join(argv)}") from exc
+    return CommandResult(
+        argv=tuple(str(part) for part in argv),
+        returncode=process.returncode,
+        stdout=stdout,
+        stderr=stderr,
+        duration_seconds=time.monotonic() - started,
+    )
 
 
 def safe_read_text(

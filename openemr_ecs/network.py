@@ -1,11 +1,15 @@
 """Network infrastructure components: VPC, security groups, and load balancer."""
 
+import json
+import re
 import ssl
 import urllib.request
 from typing import Optional
 
 from aws_cdk import (
     CfnOutput,
+    RemovalPolicy,
+    Stack,
 )
 from aws_cdk import aws_ec2 as ec2
 from aws_cdk import aws_elasticloadbalancingv2 as elb
@@ -48,7 +52,7 @@ class NetworkComponents:
         self.alb: Optional[elb.ApplicationLoadBalancer] = None
         self.accelerator: Optional[ga.Accelerator] = None
 
-    def create_vpc(self) -> ec2.Vpc:
+    def create_vpc(self, context: dict) -> ec2.Vpc:
         """Create the VPC with subnets and flow logs.
 
         Returns:
@@ -66,20 +70,59 @@ class NetworkComponents:
             self.scope,
             "VPC-Log-Group",
             encryption_key=kms_key,
+            removal_policy=(
+                RemovalPolicy.DESTROY if self.scope.node.try_get_context("live_e2e_run_id") else RemovalPolicy.RETAIN
+            ),
         )
 
-        self.vpc = ec2.Vpc(
-            self.scope,
-            "OpenEmr-Vpc",
-            ip_addresses=ec2.IpAddresses.cidr(self.vpc_cidr),
-            max_azs=2,
-            subnet_configuration=[
-                ec2.SubnetConfiguration(name="private-subnet", subnet_type=ec2.SubnetType.PRIVATE_WITH_EGRESS),
-                ec2.SubnetConfiguration(
-                    name="public-subnet", subnet_type=ec2.SubnetType.PUBLIC, map_public_ip_on_launch=False
-                ),
-            ],
-        )
+        subnet_configuration = [
+            ec2.SubnetConfiguration(name="private-subnet", subnet_type=ec2.SubnetType.PRIVATE_WITH_EGRESS),
+            ec2.SubnetConfiguration(
+                name="public-subnet",
+                subnet_type=ec2.SubnetType.PUBLIC,
+                map_public_ip_on_launch=False,
+            ),
+        ]
+        raw_availability_zones = context.get("live_e2e_availability_zones")
+        if raw_availability_zones is not None:
+            if not context.get("live_e2e_run_id"):
+                raise ValueError("Explicit live E2E Availability Zones require live_e2e_run_id")
+            try:
+                availability_zones = (
+                    json.loads(raw_availability_zones)
+                    if isinstance(raw_availability_zones, str)
+                    else raw_availability_zones
+                )
+            except json.JSONDecodeError as exc:
+                raise ValueError("Live E2E Availability Zones must be a JSON array") from exc
+            region = Stack.of(self.scope).region
+            if (
+                not isinstance(availability_zones, list)
+                or len(availability_zones) != 2
+                or any(
+                    not isinstance(zone, str) or not re.fullmatch(rf"{re.escape(region)}[a-z]", zone)
+                    for zone in availability_zones
+                )
+                or len(set(availability_zones)) != 2
+            ):
+                raise ValueError("Live E2E requires two unique standard Availability Zones in the stack Region")
+            self.vpc = ec2.Vpc(
+                self.scope,
+                "OpenEmr-Vpc",
+                ip_addresses=ec2.IpAddresses.cidr(self.vpc_cidr),
+                availability_zones=availability_zones,
+                subnet_configuration=subnet_configuration,
+            )
+        else:
+            self.vpc = ec2.Vpc(
+                self.scope,
+                "OpenEmr-Vpc",
+                ip_addresses=ec2.IpAddresses.cidr(self.vpc_cidr),
+                max_azs=2,
+                subnet_configuration=subnet_configuration,
+            )
+        if context.get("live_e2e_run_id"):
+            self.vpc.apply_removal_policy(RemovalPolicy.DESTROY)
 
         ec2.CfnFlowLog(
             self.scope,
@@ -237,8 +280,22 @@ class NetworkComponents:
             vpc=vpc,
             internet_facing=True,
             drop_invalid_header_fields=True,
-            deletion_protection=True,  # HIPAA requirement
+            deletion_protection=not bool(context.get("live_e2e_run_id")),
         )
+        if context.get("live_e2e_run_id"):
+            acknowledge_findings(
+                self.alb,
+                [
+                    {
+                        "id": "HIPAA.Security-ELBDeletionProtectionEnabled",
+                        "reason": (
+                            "The approval-gated live E2E stack is uniquely owned, "
+                            "non-production, and must remain deletable from cleanup "
+                            "after partial deployment failures"
+                        ),
+                    }
+                ],
+            )
         # Enable access logging (region is automatically detected from the stack)
         self.alb.log_access_logs(elb_log_bucket, prefix="alb-access-logs")
 

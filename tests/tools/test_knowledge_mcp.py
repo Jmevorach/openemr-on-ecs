@@ -237,6 +237,7 @@ def test_documentation_index_covers_every_claimed_source_and_repository_document
     for source in claimed_sources:
         result = knowledge.read_file(source, max_lines=1)
         assert result["path"] == source
+    assert knowledge.read_file("e2e-results/history.json", max_lines=1)["path"] == ("e2e-results/history.json")
 
 
 def test_documentation_index_fails_closed_on_invalid_sources_and_limits(
@@ -354,11 +355,13 @@ def test_curated_sources_and_commands_match_current_scope() -> None:
     assert "KNOWLEDGE-MCP.md" in knowledge.overview()["primary_guides"]
     assert knowledge.topic("import")["topic"] == "openemr-import"
     assert "IMPORTING-OPENEMR.md" in knowledge.overview()["primary_guides"]
+    assert knowledge.topic("live e2e")["topic"] == "live-e2e"
+    assert "LIVE-E2E.md" in knowledge.overview()["primary_guides"]
     for source in knowledge.topic("credential-rotation")["sources"]:
         knowledge.read_file(source, max_lines=1)
     serialized = json.dumps(knowledge.operational_commands()).lower()
     assert "openemr import" in serialized
-    assert "live e2e" not in serialized
+    assert "live e2e" in serialized
 
 
 def test_path_traversal_symlink_secrets_encoding_and_size_are_rejected(

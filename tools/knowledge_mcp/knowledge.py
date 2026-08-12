@@ -86,6 +86,7 @@ _ALLOWED_PREFIXES = {
     "compose",
     "diagrams",
     "docs",
+    "e2e-results",
     "lambda",
     "openemr_ecs",
     "scripts",
@@ -219,6 +220,18 @@ _TOPICS: dict[str, dict[str, Any]] = {
             "tools/openemr-import-worker/worker.py",
             "openemr_ecs/compute.py",
             "openemr_ecs/storage.py",
+        ],
+    },
+    "live-e2e": {
+        "summary": (
+            "An approval-gated local runner deploys, validates, measures, and " "cleans up an isolated real-AWS stack."
+        ),
+        "sources": [
+            "LIVE-E2E.md",
+            "docs/deployment-timing.md",
+            "e2e-results/history.json",
+            "tools/live_e2e/runner.py",
+            "tools/live_e2e/aws.py",
         ],
     },
     "troubleshooting": {
@@ -450,6 +463,7 @@ class RepositoryKnowledge:
                 "DETAILS.md",
                 "TROUBLESHOOTING.md",
                 "IMPORTING-OPENEMR.md",
+                "LIVE-E2E.md",
                 "KNOWLEDGE-MCP.md",
                 "MAINTAINERS.md",
             ],
@@ -863,6 +877,26 @@ class RepositoryKnowledge:
                 "purpose": "Clean up a completed OpenEMR import",
                 "command": "python3 -m tools.openemr_import cleanup --help",
                 "risk": "permanently deletes rollback and staging artifacts",
+            },
+            {
+                "purpose": "Generate the live E2E timing report",
+                "command": "python3 -m tools.live_e2e report",
+                "risk": "local-only deterministic report generation; does not contact AWS",
+            },
+            {
+                "purpose": "Preflight a live AWS E2E run",
+                "command": "python3 -m tools.live_e2e preflight --help",
+                "risk": "read-only AWS checks and local synthesis; requires explicit scope confirmations",
+            },
+            {
+                "purpose": "Run an approved live AWS E2E lifecycle",
+                "command": "python3 -m tools.live_e2e run --help",
+                "risk": "creates billable AWS resources and then deletes the owned stack",
+            },
+            {
+                "purpose": "Clean up an interrupted live AWS E2E run",
+                "command": "python3 -m tools.live_e2e cleanup --help",
+                "risk": "destructively deletes only resources bound to the exact E2E ownership marker",
             },
             {
                 "purpose": "Stack cleanup",

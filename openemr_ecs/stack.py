@@ -8,6 +8,7 @@ from aws_cdk import (
     CustomResource,
     Duration,
     Stack,
+    Tags,
 )
 from aws_cdk import aws_certificatemanager as acm
 from aws_cdk import aws_ec2 as ec2
@@ -30,7 +31,7 @@ from .nag_suppressions import acknowledge_findings
 from .network import NetworkComponents
 from .security import SecurityComponents
 from .storage import StorageComponents
-from .utils import is_true
+from .utils import get_ssm_parameter_name, is_true
 from .validation import ValidationError, validate_context
 from .version import __version__
 
@@ -53,6 +54,7 @@ class OpenemrEcsStack(Stack):
             "email_forwarding_address",
             "route53_domain",
             "openemr_import_target",
+            "route53_hosted_zone_id",
             "openemr_service_fargate_minimum_capacity",
             "openemr_service_fargate_maximum_capacity",
             "openemr_service_fargate_cpu",
@@ -81,9 +83,18 @@ class OpenemrEcsStack(Stack):
             "enable_monitoring_alarms",
             "monitoring_email",
             "deployment_notification_email",
+            "live_e2e_run_id",
+            "live_e2e_availability_zones",
         ]
 
         context = {key: self.node.try_get_context(key) for key in context_keys}
+
+        # The guarded runner supplies a unique run ID. Tags make taggable
+        # residuals observable without changing normal deployment behavior.
+        live_e2e_run_id = context.get("live_e2e_run_id")
+        if live_e2e_run_id:
+            Tags.of(self).add("LiveE2ERunId", str(live_e2e_run_id))
+            Tags.of(self).add("Purpose", "OpenEMRLiveE2E")
 
         # Validate context values before proceeding with deployment
         # This catches configuration errors early and prevents deployment failures
@@ -134,7 +145,7 @@ class OpenemrEcsStack(Stack):
         cleanup = CleanupComponents(self)
 
         # Create network infrastructure
-        self.vpc = network.create_vpc()
+        self.vpc = network.create_vpc(context)
         db_sec_group, valkey_sec_group, lb_sec_group = network.create_security_groups(self.vpc, context)
         self.db_security_group = db_sec_group
         self.db_sec_group = db_sec_group
@@ -297,7 +308,7 @@ class OpenemrEcsStack(Stack):
         security.create_waf(self.alb, kms_keys.central_key)
 
         # Create environment variables
-        self._create_environment_variables()
+        self._create_environment_variables(context)
 
         # Create password
         self._create_password()
@@ -692,11 +703,19 @@ def handler(event, context):
             properties={"StackName": self.stack_name},
         )
 
-    def _create_environment_variables(self):
+    def _create_environment_variables(self, context: dict):
         """Persist reusable application settings in Parameter Store for ECS tasks."""
-        self.swarm_mode = ssm.StringParameter(self, "swarm-mode", parameter_name="swarm_mode", string_value="yes")
+        self.swarm_mode = ssm.StringParameter(
+            self,
+            "swarm-mode",
+            parameter_name=get_ssm_parameter_name("swarm_mode", context),
+            string_value="yes",
+        )
         self.mysql_port_var = ssm.StringParameter(
-            self, "mysql-port", parameter_name="mysql_port", string_value=str(self.mysql_port)
+            self,
+            "mysql-port",
+            parameter_name=get_ssm_parameter_name("mysql_port", context),
+            string_value=str(self.mysql_port),
         )
 
     def _create_password(self):
@@ -750,10 +769,16 @@ def handler(event, context):
         # API activation parameters
         if is_true(context.get("activate_openemr_apis")):
             self.activate_fhir_service = ssm.StringParameter(
-                self, "activate-fhir-service", parameter_name="activate_fhir_service", string_value="1"
+                self,
+                "activate-fhir-service",
+                parameter_name=get_ssm_parameter_name("activate_fhir_service", context),
+                string_value="1",
             )
             self.activate_rest_api = ssm.StringParameter(
-                self, "activate-rest-api", parameter_name="activate_rest_api", string_value="1"
+                self,
+                "activate-rest-api",
+                parameter_name=get_ssm_parameter_name("activate_rest_api", context),
+                string_value="1",
             )
 
         # Patient portal parameters
@@ -761,23 +786,35 @@ def handler(event, context):
             self.portal_onsite_two_address = ssm.StringParameter(
                 self,
                 "portal-onsite-two-address",
-                parameter_name="portal_onsite_two_address",
+                parameter_name=get_ssm_parameter_name("portal_onsite_two_address", context),
                 string_value=f"{base_url}/portal/",
             )
             self.portal_onsite_two_enable = ssm.StringParameter(
-                self, "portal-onsite-two-enable", parameter_name="portal_onsite_two_enable", string_value="1"
+                self,
+                "portal-onsite-two-enable",
+                parameter_name=get_ssm_parameter_name("portal_onsite_two_enable", context),
+                string_value="1",
             )
             self.ccda_alt_service_enable = ssm.StringParameter(
-                self, "ccda-alt-service-enable", parameter_name="ccda_alt_service_enable", string_value="3"
+                self,
+                "ccda-alt-service-enable",
+                parameter_name=get_ssm_parameter_name("ccda_alt_service_enable", context),
+                string_value="3",
             )
             self.rest_portal_api = ssm.StringParameter(
-                self, "rest-portal-api", parameter_name="rest_portal_api", string_value="1"
+                self,
+                "rest-portal-api",
+                parameter_name=get_ssm_parameter_name("rest_portal_api", context),
+                string_value="1",
             )
 
         # Site address OAuth (required for APIs or portal)
         if is_true(context.get("activate_openemr_apis")) or is_true(context.get("enable_patient_portal")):
             self.site_addr_oath = ssm.StringParameter(
-                self, "site-addr-oath", parameter_name="site_addr_oath", string_value=base_url
+                self,
+                "site-addr-oath",
+                parameter_name=get_ssm_parameter_name("site_addr_oath", context),
+                string_value=base_url,
             )
 
     def _create_outputs(self, context: dict):
@@ -965,19 +1002,6 @@ def handler(event, context):
                 value=",".join(subnet.subnet_id for subnet in self.vpc.private_subnets),
                 description="Comma-separated private subnet IDs used by guarded one-off tasks",
             )
-            CfnOutput(
-                self,
-                "DatabaseClusterArn",
-                value=self.db_instance.cluster_arn,
-                description="Aurora cluster ARN used to verify import recovery points",
-            )
-            CfnOutput(
-                self,
-                "OpenEMRVersion",
-                value=self.openemr_version,
-                description="OpenEMR container version used by the deployed stack",
-            )
-
         # Stack termination protection status
         if self.enable_termination_protection:
             CfnOutput(
@@ -989,3 +1013,25 @@ def handler(event, context):
 
         # Stack version
         CfnOutput(self, "StackVersion", value=__version__, description="Version of the CDK stack deployed")
+
+        live_e2e_run_id = context.get("live_e2e_run_id")
+        if is_true(context.get("openemr_import_target")) or live_e2e_run_id:
+            CfnOutput(
+                self,
+                "DatabaseClusterArn",
+                value=self.db_instance.cluster_arn,
+                description="Aurora cluster ARN used by guarded operational workflows",
+            )
+            CfnOutput(
+                self,
+                "OpenEMRVersion",
+                value=self.openemr_version,
+                description="OpenEMR container version used by the deployed stack",
+            )
+        if live_e2e_run_id:
+            CfnOutput(
+                self,
+                "LiveE2ERunId",
+                value=str(live_e2e_run_id),
+                description="Ownership marker used by the guarded local live-E2E cleanup path",
+            )

@@ -3,6 +3,7 @@
 from typing import Optional
 
 from aws_cdk import (
+    RemovalPolicy,
     SecretValue,
     Stack,
 )
@@ -16,7 +17,7 @@ from constructs import Construct
 
 from .kms_keys import KmsKeys
 from .nag_suppressions import acknowledge_findings, suppress_vpc_endpoint_security_group_findings
-from .utils import get_resource_suffix, is_true
+from .utils import get_resource_suffix, get_ssm_parameter_name, is_true
 
 
 class DatabaseComponents:
@@ -168,10 +169,13 @@ class DatabaseComponents:
             parameters=parameters,
         )
 
+        live_e2e = bool(context.get("live_e2e_run_id"))
+
         # Deletion protection: on by default, but can be temporarily disabled (e.g., for cdk destroy) via context flag
         deletion_protection_enabled = is_true(context.get("rds_deletion_protection", "true"))
-        if is_true(context.get("disable_rds_deletion_protection_on_destroy", "false")):
+        if live_e2e or is_true(context.get("disable_rds_deletion_protection_on_destroy", "false")):
             deletion_protection_enabled = False
+        removal_policy = RemovalPolicy.DESTROY if live_e2e else RemovalPolicy.SNAPSHOT
 
         # Get resource suffix for consistent naming
         suffix = get_resource_suffix(context)
@@ -214,6 +218,7 @@ class DatabaseComponents:
                 vpc_subnets=ec2.SubnetSelection(subnet_type=ec2.SubnetType.PRIVATE_WITH_EGRESS),
                 vpc=vpc,
                 deletion_protection=deletion_protection_enabled,
+                removal_policy=removal_policy,
             )
         else:
             self.db_instance = rds.DatabaseCluster(
@@ -247,6 +252,7 @@ class DatabaseComponents:
                 vpc_subnets=ec2.SubnetSelection(subnet_type=ec2.SubnetType.PRIVATE_WITH_EGRESS),
                 vpc=vpc,
                 deletion_protection=deletion_protection_enabled,
+                removal_policy=removal_policy,
             )
 
         # Add RDS acknowledgments for intentional configurations
@@ -391,26 +397,29 @@ class DatabaseComponents:
         self.valkey_endpoint = ssm.StringParameter(
             self.scope,
             "valkey-endpoint",
-            parameter_name="valkey_endpoint",
+            parameter_name=get_ssm_parameter_name("valkey_endpoint", context),
             string_value=self.valkey_cluster.attr_endpoint_address,
         )
 
         self.php_valkey_tls_variable = ssm.StringParameter(
-            scope=self.scope, id="php-valkey-tls-variable", parameter_name="php_valkey_tls_variable", string_value="yes"
+            scope=self.scope,
+            id="php-valkey-tls-variable",
+            parameter_name=get_ssm_parameter_name("php_valkey_tls_variable", context),
+            string_value="yes",
         )
 
         # MySQL SSL configuration - enable SSL for database connections
         self.mysql_ssl_ca_variable = ssm.StringParameter(
             scope=self.scope,
             id="mysql-ssl-ca-variable",
-            parameter_name="mysql_ssl_ca_variable",
+            parameter_name=get_ssm_parameter_name("mysql_ssl_ca_variable", context),
             string_value="/var/www/localhost/htdocs/openemr/sites/default/documents/certificates/mysql-ca",
         )
 
         self.mysql_ssl_enabled_variable = ssm.StringParameter(
             scope=self.scope,
             id="mysql-ssl-enabled-variable",
-            parameter_name="mysql_ssl_enabled_variable",
+            parameter_name=get_ssm_parameter_name("mysql_ssl_enabled_variable", context),
             string_value="yes",
         )
 

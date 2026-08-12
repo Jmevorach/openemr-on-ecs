@@ -568,6 +568,8 @@ validation commands, generated artifacts, and safe maintenance boundaries.
 - [Troubleshooting Guide](TROUBLESHOOTING.md) - Common issues and solutions including database connection problems, container health checks, SSL/TLS issues, and deployment failures
 - [Detailed Configuration Guide](DETAILS.md) - Complete configuration options and advanced features for customizing your deployment
 - [Local Testing Guide](README-TESTING.md) - Test the container startup locally using Docker Compose before deploying to AWS
+- [Maintainer Guide](MAINTAINERS.md) - Supported local toolchains and guarded operational commands
+- [Live E2E Guide](LIVE-E2E.md) - Approval-gated real-AWS lifecycle validation and timing methodology
 
 ### Helper Scripts & Tools
 - [Scripts Documentation](scripts/README.md) - Complete guide to all helper scripts including validation, stress testing, configuration testing, local testing, and database access tools

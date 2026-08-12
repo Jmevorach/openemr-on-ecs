@@ -39,7 +39,7 @@ from .nag_suppressions import (
     suppress_lambda_role_common_findings,
     suppress_vpc_endpoint_security_group_findings,
 )
-from .utils import is_true
+from .utils import get_ssm_parameter_name, is_true
 
 
 class SecurityComponents:
@@ -262,10 +262,22 @@ class SecurityComponents:
         if not context.get("route53_domain"):
             return None
 
-        # Define the hosted zone in Route 53
-        hosted_zone = route53.HostedZone.from_lookup(
-            self.scope, "HostedZoneForRoute53", domain_name=str(context.get("route53_domain"))
-        )
+        # The guarded runner resolves and validates the dedicated zone during
+        # read-only preflight, avoiding a mutable run-time name lookup.
+        hosted_zone_id = context.get("route53_hosted_zone_id")
+        if hosted_zone_id:
+            if not context.get("live_e2e_run_id"):
+                raise ValueError("route53_hosted_zone_id is reserved for live E2E runs")
+            hosted_zone = route53.HostedZone.from_hosted_zone_attributes(
+                self.scope,
+                "HostedZoneForRoute53",
+                hosted_zone_id=str(hosted_zone_id),
+                zone_name=str(context.get("route53_domain")),
+            )
+        else:
+            hosted_zone = route53.HostedZone.from_lookup(
+                self.scope, "HostedZoneForRoute53", domain_name=str(context.get("route53_domain"))
+            )
 
         self.certificate = acm.Certificate(
             self.scope,
@@ -474,30 +486,39 @@ class SecurityComponents:
 
         # Store SMTP configuration in SSM Parameters
         self.smtp_user = ssm.StringParameter(
-            scope=self.scope, id="smtp-user", parameter_name="smtp_user", string_value=access_key.access_key_id
+            scope=self.scope,
+            id="smtp-user",
+            parameter_name=get_ssm_parameter_name("smtp_user", context),
+            string_value=access_key.access_key_id,
         )
         self.smtp_host = ssm.StringParameter(
             scope=self.scope,
             id="smtp-host",
-            parameter_name="smtp_host",
+            parameter_name=get_ssm_parameter_name("smtp_host", context),
             string_value=f"email-smtp.{region}.amazonaws.com",
         )
         self.smtp_port = ssm.StringParameter(
-            scope=self.scope, id="smtp-port", parameter_name="smtp_port", string_value="587"
+            scope=self.scope,
+            id="smtp-port",
+            parameter_name=get_ssm_parameter_name("smtp_port", context),
+            string_value="587",
         )
         self.smtp_secure = ssm.StringParameter(
-            scope=self.scope, id="smtp-secure", parameter_name="smtp_secure", string_value="tls"
+            scope=self.scope,
+            id="smtp-secure",
+            parameter_name=get_ssm_parameter_name("smtp_secure", context),
+            string_value="tls",
         )
         self.patient_reminder_sender_email = ssm.StringParameter(
             scope=self.scope,
             id="patient-reminder-sender-email",
-            parameter_name="patient_reminder_sender_email",
+            parameter_name=get_ssm_parameter_name("patient_reminder_sender_email", context),
             string_value=f"notifications@services.{context.get('route53_domain')}",
         )
         self.patient_reminder_sender_name = ssm.StringParameter(
             scope=self.scope,
             id="patient-reminder-sender-name",
-            parameter_name="patient_reminder_sender_name",
+            parameter_name=get_ssm_parameter_name("patient_reminder_sender_name", context),
             string_value="OpenEMR",
         )
 
@@ -645,7 +666,7 @@ class SecurityComponents:
             self.practice_return_email_path = ssm.StringParameter(
                 scope=self.scope,
                 id="practice-return-email-path",
-                parameter_name="practice_return_email_path",
+                parameter_name=get_ssm_parameter_name("practice_return_email_path", context),
                 string_value=email_forwarding_address,
             )
         else:
