@@ -1160,7 +1160,7 @@ class _CommandRunner(LiveE2ERunner):
         self,
         cdk_command: str,
     ) -> tuple[tuple[CheckResult, ...], dict[str, str]]:
-        assert cdk_command == "/usr/bin/false"
+        assert Path(cdk_command) == self.root / "node_modules" / ".bin" / "cdk"
         return (), {
             "python_version": "3.14.0",
             "node_version": "v24.1.0",
@@ -1183,8 +1183,11 @@ def _write_approved_preflight(root: Path, run_id: str) -> Path:
     )
     preflight_dir = root / ".live-e2e" / "preflight"
     run_dir = root / ".live-e2e" / "runs" / run_id
+    cdk = root / "node_modules" / ".bin" / "cdk"
     cdk_assets = root / "node_modules" / ".bin" / "cdk-assets"
     cdk_assets.parent.mkdir(parents=True, exist_ok=True)
+    cdk.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    cdk.chmod(0o755)
     cdk_assets.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     cdk_assets.chmod(0o755)
     preflight_dir.mkdir(parents=True)
@@ -1211,7 +1214,7 @@ def _write_approved_preflight(root: Path, run_id: str) -> Path:
                 "allowed_ipv4_cidr": "8.8.8.8/32",
                 "profile": "default",
                 "aws_profile": None,
-                "cdk_command": "/usr/bin/false",
+                "cdk_command": str(cdk),
                 "stack_name": stack_name(run_id),
                 "context_fingerprint": fingerprint(contexts),
                 "assembly_fingerprint": _directory_fingerprint(run_dir / "cdk.out"),
@@ -1221,7 +1224,7 @@ def _write_approved_preflight(root: Path, run_id: str) -> Path:
                     "node_version": "v24.1.0",
                     "cdk_cli_version": "2.1135.1",
                     "cdk_library_version": "2.264.0",
-                    "cdk_executable_sha256": _file_sha256(Path("/usr/bin/false")),
+                    "cdk_executable_sha256": _file_sha256(cdk),
                     "cdk_assets_version": "4.7.0",
                     "cdk_assets_executable_sha256": _file_sha256(cdk_assets),
                     "openemr_version": "8.2.0",
