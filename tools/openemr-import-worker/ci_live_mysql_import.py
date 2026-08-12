@@ -257,23 +257,28 @@ def _run_recovery(*, migration_id: str, mount_root: Path, source: Path) -> None:
     work.mkdir(parents=True, mode=0o700)
     sqlconf_before = (mount_root / "default" / "sqlconf.php").read_bytes()
     try:
+        _emit({"phase": "target-validation", "scenario": "recovery"})
         expected_version, expected_database_version = _expected_identity()
         import_worker._assert_fresh_efs_target(mount_root)
         import_worker._assert_empty_target(
             expected_version,
             expected_database_version,
         )
+        _emit({"phase": "source-validation", "scenario": "recovery"})
         (
             validated_sql,
             work_default,
             _source_version,
             _source_database_version,
         ) = _prepare_validated_source(work, source)
+        _emit({"phase": "recovery-baseline", "scenario": "recovery"})
         rollback_root = mount_root / ".openemr-import-backup" / migration_id
         shutil.rmtree(rollback_root, ignore_errors=True)
         rollback_root.mkdir(parents=True, mode=0o700)
         import_worker._dump_target_database(rollback_root / "target-baseline.sql")
+        _emit({"phase": "database-import", "scenario": "recovery"})
         import_worker._replace_database(validated_sql, migration_id)
+        _emit({"phase": "site-import", "scenario": "recovery"})
         import_worker._stage_and_swap_sites(
             work_default,
             mount_root,
@@ -282,6 +287,7 @@ def _run_recovery(*, migration_id: str, mount_root: Path, source: Path) -> None:
         if _patient_count() < 1:
             raise HarnessFailure("recovery-replace-did-not-load-source")
 
+        _emit({"phase": "fresh-process-recovery", "scenario": "recovery"})
         recovered = subprocess.run(
             [
                 sys.executable,
