@@ -723,7 +723,7 @@ jobs:
   import-worker-mysql-integration:
     name: Import Worker MySQL Integration
     runs-on: ubuntu-26.04
-    timeout-minutes: 30
+    timeout-minutes: 60
 
     steps:
       - name: Checkout repository
