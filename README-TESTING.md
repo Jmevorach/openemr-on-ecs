@@ -96,7 +96,7 @@ The `compose/docker-compose.test.yml` file simulates the exact container startup
 
 ## Leadership Recovery
 
-In ECS, multiple tasks might start simultaneously. OpenEMR's `openemr.sh` handles leadership using `sites/docker-leader` and `sites/docker-completed` files. 
+In ECS, multiple tasks might start simultaneously. OpenEMR's `openemr.sh` handles leadership using `sites/docker-leader` and `sites/docker-completed` files.
 
 If a leadership container fails *before* completion, it may leave a stale `docker-leader` file. The current fix for this is ensuring the lead container succeeds by providing correct SSL materials and environment configuration. If you need to force a reset during testing, you can delete these files from the shared storage (EFS in AWS, or local volumes in Docker).
 
@@ -188,7 +188,7 @@ ls -la /root/certs/redis/
 ## Comparing with ECS
 
 The local test environment uses:
-- Same Docker image: `openemr/openemr:8.1.0`
+- Same Docker image: `openemr/openemr:8.1.1`
 - Same startup command from `compute.py`
 - Same environment variable structure
 

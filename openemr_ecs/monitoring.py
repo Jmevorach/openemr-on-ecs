@@ -15,6 +15,8 @@ from aws_cdk import aws_sns as sns
 from aws_cdk import aws_sns_subscriptions as sns_subs
 from constructs import Construct
 
+from .kms_keys import KmsKeys
+
 
 class MonitoringComponents:
     """Creates and manages monitoring infrastructure.
@@ -26,13 +28,14 @@ class MonitoringComponents:
     - Email subscriptions for notifications
     """
 
-    def __init__(self, scope: Construct):
+    def __init__(self, scope: Construct, kms_keys: KmsKeys):
         """Initialize monitoring components.
 
         Args:
             scope: The CDK construct scope
         """
         self.scope = scope
+        self.kms_keys = kms_keys
         self.alarms_topic: Optional[sns.Topic] = None
         self.deployment_topic: Optional[sns.Topic] = None
 
@@ -46,7 +49,7 @@ class MonitoringComponents:
             The created SNS topic
         """
         # Get KMS key for SNS encryption
-        kms_key = self.scope.kms_keys.central_key
+        kms_key = self.kms_keys.central_key
 
         self.alarms_topic = sns.Topic(
             self.scope,
@@ -83,7 +86,7 @@ class MonitoringComponents:
             The created SNS topic
         """
         # Get KMS key for SNS encryption
-        kms_key = self.scope.kms_keys.central_key
+        kms_key = self.kms_keys.central_key
 
         self.deployment_topic = sns.Topic(
             self.scope,

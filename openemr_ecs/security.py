@@ -30,6 +30,8 @@ from aws_cdk import (
 )
 from constructs import Construct
 
+from .assets import python_lambda_code
+from .kms_keys import KmsKeys
 from .nag_suppressions import (
     acknowledge_findings,
     suppress_lambda_common_findings,
@@ -49,13 +51,14 @@ class SecurityComponents:
     - SSL/TLS materials generation and maintenance
     """
 
-    def __init__(self, scope: Construct):
+    def __init__(self, scope: Construct, kms_keys: KmsKeys):
         """Initialize security components.
 
         Args:
             scope: The CDK construct scope
         """
         self.scope = scope
+        self.kms_keys = kms_keys
         self.certificate: Optional[acm.Certificate] = None
         self.one_time_create_ssl_materials_lambda: Optional[triggers.TriggerFunction] = None
         self.efs_only_security_group: Optional[ec2.SecurityGroup] = None
@@ -389,7 +392,7 @@ class SecurityComponents:
         access_key = iam.AccessKey(self.scope, "SmtpAccessKey", user=ses_smtp_user)
 
         # Get KMS key for secrets encryption
-        kms_key = self.scope.kms_keys.central_key
+        kms_key = self.kms_keys.central_key
 
         # Create secrets for SMTP credentials
         self.smtp_password = secretsmanager.Secret(
@@ -425,29 +428,30 @@ class SecurityComponents:
             self.scope,
             "SMTPSetup",
             runtime=lambda_python_runtime,
-            code=_lambda.Code.from_asset("lambda"),
+            code=python_lambda_code(),
             architecture=_lambda.Architecture.ARM_64,
             handler="lambda_functions.generate_smtp_credential",
             timeout=Duration.minutes(10),
         )
 
         # Add suppressions for SMTP setup Lambda (before grants)
+        smtp_role = self.one_time_generate_smtp_credential_lambda.role
+        if smtp_role is None:
+            raise RuntimeError("SMTP credential Lambda requires an execution role")
         suppress_lambda_common_findings(
             self.one_time_generate_smtp_credential_lambda,
             vpc_required=False,
             reason_suffix="Generates SMTP credentials via AWS API, does not require VPC access.",
         )
-        suppress_lambda_role_common_findings(self.one_time_generate_smtp_credential_lambda.role, role_type="smtp_setup")
+        suppress_lambda_role_common_findings(smtp_role, role_type="smtp_setup")
 
         # Grant permissions (this creates the DefaultPolicy)
-        secret_access_key.grant_read(self.one_time_generate_smtp_credential_lambda.role)  # type: ignore
-        self.smtp_password.grant_write(self.one_time_generate_smtp_credential_lambda.role)  # type: ignore
+        secret_access_key.grant_read(smtp_role)
+        self.smtp_password.grant_write(smtp_role)
 
         # Add suppressions for DefaultPolicy (after grants create it)
         acknowledge_findings(
-            self.one_time_generate_smtp_credential_lambda.role.node.find_child("DefaultPolicy").node.find_child(
-                "Resource"
-            ),
+            smtp_role.node.find_child("DefaultPolicy").node.find_child("Resource"),
             [
                 {
                     "id": "AwsSolutions-IAM5",
@@ -572,6 +576,8 @@ class SecurityComponents:
 
         # Set deletion policy to RETAIN - our cleanup Lambda will handle deletion
         cfn_rule_set = self.ses_rule_set.node.default_child
+        if not isinstance(cfn_rule_set, ses.CfnReceiptRuleSet):
+            raise RuntimeError("SES rule set is missing its CloudFormation resource")
         cfn_rule_set.apply_removal_policy(RemovalPolicy.RETAIN)
 
         email_forwarding_address = context.get("email_forwarding_address")
@@ -581,7 +587,7 @@ class SecurityComponents:
                 self.scope,
                 "EmailForwardingLambda",
                 runtime=lambda_python_runtime,
-                code=_lambda.Code.from_asset("lambda"),
+                code=python_lambda_code(),
                 architecture=_lambda.Architecture.ARM_64,
                 handler="lambda_functions.send_email",
                 environment={
@@ -656,7 +662,7 @@ class SecurityComponents:
             self.scope,
             "MakeRuleSetActive",
             runtime=lambda_python_runtime,
-            code=_lambda.Code.from_asset("lambda"),
+            code=python_lambda_code(),
             architecture=_lambda.Architecture.ARM_64,
             handler="lambda_functions.make_ruleset_active",
             timeout=Duration.minutes(10),
@@ -762,8 +768,11 @@ class SecurityComponents:
         )
 
         # Suppress inline policy for execution role (after container creates the DefaultPolicy)
+        ssl_execution_role = create_ssl_materials_task.execution_role
+        if ssl_execution_role is None:
+            raise RuntimeError("SSL maintenance task requires an execution role")
         acknowledge_findings(
-            create_ssl_materials_task.execution_role,
+            ssl_execution_role,
             [
                 {
                     "id": "HIPAA.Security-IAMNoInlinePolicy",
@@ -794,7 +803,7 @@ class SecurityComponents:
             self.scope,
             "MaintainSSLMaterialsLambda",
             runtime=lambda_python_runtime,
-            code=_lambda.Code.from_asset("lambda"),
+            code=python_lambda_code(),
             architecture=_lambda.Architecture.ARM_64,
             handler="lambda_functions.generate_ssl_materials",
             timeout=Duration.minutes(10),
@@ -849,7 +858,7 @@ class SecurityComponents:
             self.scope,
             "OneTimeSSLSetup",
             runtime=lambda_python_runtime,
-            code=_lambda.Code.from_asset("lambda"),
+            code=python_lambda_code(),
             architecture=_lambda.Architecture.ARM_64,
             handler="lambda_functions.generate_ssl_materials",
             timeout=Duration.minutes(10),

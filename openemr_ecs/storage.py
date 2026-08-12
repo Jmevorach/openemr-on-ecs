@@ -18,6 +18,7 @@ from aws_cdk import aws_logs as logs
 from aws_cdk import aws_s3 as s3
 from constructs import Construct
 
+from .kms_keys import KmsKeys
 from .nag_suppressions import acknowledge_findings
 from .utils import get_resource_suffix
 
@@ -32,13 +33,14 @@ class StorageComponents:
     - CloudTrail logging (optional)
     """
 
-    def __init__(self, scope: Construct):
+    def __init__(self, scope: Construct, kms_keys: KmsKeys):
         """Initialize storage components.
 
         Args:
             scope: The CDK construct scope
         """
         self.scope = scope
+        self.kms_keys = kms_keys
         self.elb_log_bucket: Optional[s3.Bucket] = None
         self.cloudtrail_log_bucket: Optional[s3.Bucket] = None
         self.cloudtrail_kms_key: Optional[kms.Key] = None
@@ -247,7 +249,7 @@ class StorageComponents:
         )
 
         # Get KMS key for CloudWatch Logs encryption
-        logs_kms_key = self.scope.kms_keys.central_key
+        logs_kms_key = self.kms_keys.central_key
 
         # Create CloudTrail trail with CloudWatch Logs
         self.trail = cloudtrail.Trail(

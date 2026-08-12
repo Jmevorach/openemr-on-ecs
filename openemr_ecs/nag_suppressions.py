@@ -1,46 +1,30 @@
 """Helper functions for CDK Nag suppressions (cdk-nag v3 / aws-cdk-lib Validations API)."""
 
 from aws_cdk import Validations
-from constructs import Construct
+from constructs import IConstruct
 
 
-def acknowledge_findings(construct: Construct, findings: list) -> None:
+def acknowledge_findings(construct: IConstruct, findings: list) -> None:
     """Acknowledge (suppress) cdk-nag findings on a construct and its descendants.
 
     This is the cdk-nag v3 equivalent of the old cdk-nag v2
     ``NagSuppressions.add_resource_suppressions`` helper. cdk-nag v3 removed
     ``NagSuppressions`` in favor of CDK's native ``Validations.of().acknowledge()``
-    API. Acknowledgments made on a construct apply to that construct and all of
-    its descendants in the construct tree, so v2's ``apply_to_children=True``
-    is now the (only) default behavior.
+    API. cdk-nag checks each resource and its ancestors for acknowledgment
+    metadata, which preserves v2's ``apply_to_children=True`` behavior.
 
     We write directly to the CDK "acknowledged rules" construct metadata (the
     same metadata key/mechanism ``Validations.of(construct).acknowledge()``
-    uses internally) instead of calling that method directly, for two reasons:
-
-    1. This app registers cdk-nag packs with ``verbose=True`` (see app.py),
-       which routes violations through CDK's Annotations system. In that mode
-       cdk-nag only recognizes acknowledgments whose ID is qualified with the
-       pack name, e.g. "AwsSolutions::AwsSolutions-IAM5[Resource::*]" rather
-       than the bare "AwsSolutions-IAM5[Resource::*]" shown in cdk-nag's own
-       docs (which assume non-verbose output). The public
-       ``Validations.acknowledge()`` API does not add this pack-name prefix.
-    2. aws-cdk-lib's ``Validations.acknowledge()`` has a confirmed upstream bug
-       (https://github.com/cdklabs/cdk-nag/issues/2351): its ID validation
-       rejects any finding ID containing more than one "::", which includes
-       every AWS managed policy ARN (e.g.
-       "AwsSolutions-IAM4[Policy::arn:<AWS::Partition>:iam::aws:policy/...]").
-
-    cdk-nag itself reads this metadata directly with no such restrictions, so
-    writing it ourselves (with the pack-name prefix) is safe and is how these
-    findings must be acknowledged given verbose=True.
+    uses internally) because aws-cdk-lib has a confirmed upstream bug
+    (https://github.com/cdklabs/cdk-nag/issues/2351): its ID validation rejects
+    any finding ID containing more than one "::", including AWS managed policy
+    ARNs. cdk-nag reads the bare rule ID from this metadata directly and has no
+    such restriction.
 
     Args:
         construct: The construct to acknowledge findings on.
         findings: A list of dicts, each with:
-            - "id": the rule ID (e.g. "AwsSolutions-IAM5"). The pack name
-              (the segment before the first "-") is used as the metadata
-              key prefix required by verbose-mode acknowledgment.
+            - "id": the bare cdk-nag rule ID (e.g. "AwsSolutions-IAM5").
             - "reason": the reason for the acknowledgment
             - "appliesTo" (optional): a list of finding-specific suffixes.
               v3 has no bulk suppression, so each suffix becomes its own
@@ -49,16 +33,17 @@ def acknowledge_findings(construct: Construct, findings: list) -> None:
     for finding in findings:
         rule_id = finding["id"]
         reason = finding["reason"]
-        pack_name = rule_id.split("-", 1)[0]
         applies_to = finding.get("appliesTo")
         if applies_to:
             for suffix in applies_to:
                 construct.node.add_metadata(
-                    Validations.ACKNOWLEDGED_RULES_METADATA_KEY, {f"{pack_name}::{rule_id}[{suffix}]": reason}
+                    Validations.ACKNOWLEDGED_RULES_METADATA_KEY,
+                    {f"{rule_id}[{suffix}]": reason},
                 )
         else:
             construct.node.add_metadata(
-                Validations.ACKNOWLEDGED_RULES_METADATA_KEY, {f"{pack_name}::{rule_id}": reason}
+                Validations.ACKNOWLEDGED_RULES_METADATA_KEY,
+                {rule_id: reason},
             )
 
 
@@ -243,7 +228,7 @@ def suppress_sagemaker_role_findings(sagemaker_role):
     acknowledge_findings(sagemaker_role, suppressions)
 
 
-def suppress_vpc_endpoint_security_group_findings(security_group: Construct, endpoint_name: str):
+def suppress_vpc_endpoint_security_group_findings(security_group: IConstruct, endpoint_name: str):
     """Applies common acknowledgments to VPC endpoint security groups.
 
     These acknowledgments address false positives from cdk_nag when intrinsic

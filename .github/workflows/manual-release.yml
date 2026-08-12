@@ -26,25 +26,36 @@ permissions:
   contents: write
   pull-requests: write
 
+concurrency:
+  group: manual-release
+  cancel-in-progress: false
+
 env:
   PYTHON_VERSION: "3.14"
+  PIP_VERSION: "26.2.1"
   SEMVER_VERSION: "3.0.4"
 
 jobs:
   create-release:
     name: Create Manual Release
-    runs-on: ubuntu-24.04
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-26.04
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          ref: main
 
       - name: Verify repository state
         run: |
           if [ ! -f VERSION ]; then
             echo "::error::Missing VERSION file in repository root."
+            exit 1
+          fi
+          if [ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main)" ]; then
+            echo "::error::Release checkout does not match origin/main."
             exit 1
           fi
 
@@ -64,18 +75,20 @@ jobs:
             STATUS=false
           fi
 
-          echo "last_tag=$LAST_TAG" >> "$GITHUB_OUTPUT"
-          echo "has_changes=$STATUS" >> "$GITHUB_OUTPUT"
-          echo "change_count=$CHANGES" >> "$GITHUB_OUTPUT"
+          {
+            echo "last_tag=$LAST_TAG"
+            echo "has_changes=$STATUS"
+            echo "change_count=$CHANGES"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Install semantic version tooling
         run: |
-          python -m pip install --upgrade pip
+          python -m pip install "pip==${PIP_VERSION}"
           pip install "semver==${{ env.SEMVER_VERSION }}"
 
       - name: Calculate next version
@@ -144,13 +157,14 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          git push origin HEAD:main
-          git push origin "v${{ steps.version.outputs.next }}"
+          git push --atomic origin \
+            HEAD:refs/heads/main \
+            "refs/tags/v${{ steps.version.outputs.next }}"
 
       - name: Create GitHub release
         id: create_release
         if: steps.changes.outputs.has_changes == 'true' && github.event.inputs.dry_run != 'true'
-        uses: ncipollo/release-action@v1
+        uses: ncipollo/release-action@339a81892b84b4eeb0f6e744e4574d79d0d9b8dd # v1.21.0
         with:
           tag: v${{ steps.version.outputs.next }}
           name: v${{ steps.version.outputs.next }}
@@ -191,4 +205,3 @@ jobs:
               echo "- GitHub release published."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
-

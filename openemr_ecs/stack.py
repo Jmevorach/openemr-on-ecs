@@ -123,13 +123,13 @@ class OpenemrEcsStack(Stack):
         kms_keys = KmsKeys(self, self.account, self.region)
         self.kms_keys = kms_keys
 
-        network = NetworkComponents(self, self.cidr)
-        storage = StorageComponents(self)
-        database = DatabaseComponents(self)
-        compute = ComputeComponents(self)
-        security = SecurityComponents(self)
+        network = NetworkComponents(self, self.cidr, kms_keys)
+        storage = StorageComponents(self, kms_keys)
+        database = DatabaseComponents(self, kms_keys)
+        compute = ComputeComponents(self, kms_keys)
+        security = SecurityComponents(self, kms_keys)
         analytics = AnalyticsComponents(self)
-        monitoring = MonitoringComponents(self)
+        monitoring = MonitoringComponents(self, kms_keys)
         cleanup = CleanupComponents(self)
 
         # Create network infrastructure
@@ -454,6 +454,8 @@ class OpenemrEcsStack(Stack):
         self.openemr_service.node.add_dependency(self.mysql_port_var)
 
         # Create one-off ECS task definition for zero-downtime credential rotation
+        if self.db_secret is None:
+            raise RuntimeError("Database secret is required for maintenance tasks")
         self.credential_rotation_task_definition = compute.create_credential_rotation_task(
             self.ecs_cluster,
             self.log_group,

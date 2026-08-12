@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import tempfile
 from pathlib import Path
 from typing import Dict
+
+logger = logging.getLogger(__name__)
 
 _SQLCONF_KEY_TO_VAR = {
     "host": "host",
@@ -76,10 +79,12 @@ def atomic_write(path: Path, content: str) -> None:
     for parent in [path.parent, path.parent.parent]:
         if parent.exists():
             try:
-                os.chmod(parent, 0o755)  # nosec B103 - Apache needs 755 to traverse EFS directories
+                # Apache needs execute permission to traverse these EFS directories.
+                os.chmod(parent, 0o755)  # nosec B103
                 os.chown(parent, _APACHE_UID, _APACHE_GID)
-            except OSError:
-                pass
+            except OSError as exc:
+                # Parent ownership can race with OpenEMR startup ownership changes.
+                logger.warning("Unable to normalize permissions on %s: %s", parent, exc)
     with tempfile.NamedTemporaryFile(
         mode="w", encoding="utf-8", dir=str(path.parent), prefix=f".{path.name}.", delete=False
     ) as tmp:

@@ -61,16 +61,12 @@ Tests are organized by scope:
 Install test dependencies:
 
 ```bash
-pip install -r requirements-dev.txt
+.venv/bin/python -m pip install -r requirements.txt -r requirements-dev.txt
 ```
 
-The `requirements-dev.txt` should include:
-```
-pytest>=7.0.0
-pytest-cov>=4.0.0
-aws-cdk-lib>=2.0.0
-constructs>=10.0.0
-```
+`requirements.txt` provides the CDK application dependencies;
+`requirements-dev.txt` provides the pinned test, quality, security, and MCP
+tooling.
 
 ### Run All Tests
 
@@ -157,7 +153,7 @@ def test_resource_created():
         env=cdk.Environment(account="111111111111", region="us-west-2")
     )
     template = assertions.Template.from_stack(stack)
-    
+
     # Assert
     template.has_resource_properties(
         "AWS::RDS::DBCluster",
@@ -370,7 +366,7 @@ def test_invalid_cpu_memory_combination_raises_error():
         "cpu": 256,
         "memory": 8192  # Invalid: 256 CPU doesn't support 8GB memory
     })
-    
+
     with pytest.raises(ValueError, match="Invalid CPU/memory combination"):
         OpenemrEcsStack(app, "TestStack")
 ```
@@ -415,7 +411,7 @@ def test_debug_template(template):
     """Debug test to view full template."""
     # Print full template as formatted JSON
     print(json.dumps(template.to_json(), indent=2))
-    
+
     # Find all resources of a specific type
     resources = template.find_resources("AWS::RDS::DBCluster")
     print(json.dumps(resources, indent=2))

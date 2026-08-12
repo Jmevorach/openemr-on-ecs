@@ -26,7 +26,6 @@ skip_glob = ["cdk.out/*", ".venv/*", "build/*", "dist/*"]
 python_version = "3.14"
 warn_return_any = true
 warn_unused_configs = true
-ignore_missing_imports = true
 exclude = [
     "cdk.out/",
     ".venv/",
@@ -48,4 +47,3 @@ markers = [
     "integration: marks tests as integration tests",
     "unit: marks tests as unit tests",
 ]
-

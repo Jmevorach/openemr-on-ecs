@@ -472,8 +472,11 @@ def handler(event, context):
         )
 
         # Add suppressions for cleanup Lambda's IAM role
+        cleanup_role = self.cleanup_lambda.role
+        if cleanup_role is None:
+            raise RuntimeError("Cleanup Lambda requires an execution role")
         acknowledge_findings(
-            self.cleanup_lambda.role,
+            cleanup_role,
             [
                 {
                     "id": "AwsSolutions-IAM4",
@@ -531,7 +534,7 @@ def handler(event, context):
 
         # Suppress inline policy for DefaultPolicy (after grant creates it)
         acknowledge_findings(
-            self.cleanup_lambda.role.node.find_child("DefaultPolicy").node.find_child("Resource"),
+            cleanup_role.node.find_child("DefaultPolicy").node.find_child("Resource"),
             [
                 {
                     "id": "AwsSolutions-IAM5",

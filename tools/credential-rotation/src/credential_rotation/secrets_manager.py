@@ -21,7 +21,7 @@ class SlotSecretState:
         active = self.payload.get("active_slot")
         if active not in ("A", "B"):
             raise ValueError(f"Invalid or missing active_slot in {self.secret_arn}: {active}")
-        return active
+        return str(active)
 
     def slot(self, name: str) -> Dict[str, Any]:
         data = self.payload.get(name)
