@@ -31,6 +31,7 @@ from aws_cdk import (
 from constructs import Construct
 
 from .assets import python_lambda_code
+from .constants import StackConstants
 from .kms_keys import KmsKeys
 from .nag_suppressions import (
     acknowledge_findings,
@@ -764,7 +765,9 @@ class SecurityComponents:
             container_name="openemr",
             entry_point=["/bin/sh", "-c"],
             command=command_array,
-            image=ecs.ContainerImage.from_registry(f"openemr/openemr:{openemr_version}"),
+            image=ecs.ContainerImage.from_registry(
+                f"openemr/openemr:{openemr_version}@{StackConstants.OPENEMR_ARM64_DIGEST}"
+            ),
         )
 
         # Suppress inline policy for execution role (after container creates the DefaultPolicy)

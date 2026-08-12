@@ -756,7 +756,9 @@ class ComputeComponents:
                 timeout=Duration.seconds(10),
                 retries=3,
             ),
-            image=ecs.ContainerImage.from_registry(f"openemr/openemr:{openemr_version}"),
+            image=ecs.ContainerImage.from_registry(
+                f"openemr/openemr:{openemr_version}@{StackConstants.OPENEMR_ARM64_DIGEST}"
+            ),
             secrets=secrets,
         )
 

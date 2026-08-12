@@ -82,7 +82,10 @@ openemr-on-ecs/
     └── setup-mysql-ssl-ca.sh # Helper to extract MySQL CA cert
 ```
 
-**Note:** The Docker Compose files reference the OpenEMR container image and scripts. The OpenEMR DevOps repository (which contains the Docker configuration) can be found at: https://github.com/openemr/openemr-devops
+**Note:** The Docker Compose files use the official OpenEMR image. Its release
+Docker source, including `docker/release/openemr.sh`, is in the
+[`openemr/openemr`](https://github.com/openemr/openemr/tree/v8_2_0/docker/release)
+repository at tag `v8_2_0`.
 
 ## What This Tests
 
@@ -188,11 +191,12 @@ ls -la /root/certs/redis/
 ## Comparing with ECS
 
 The local test environment uses:
-- Same Docker image: `openemr/openemr:8.1.1`
+- Same Docker image tag: `openemr/openemr:8.2.0`
 - Same startup command from `compute.py`
 - Same environment variable structure
 
 Differences:
+- Production pins the ARM64 image digest in addition to the release tag
 - Local MySQL instead of RDS Aurora
 - No EFS volumes (uses container volumes)
 - No AWS Secrets Manager (uses environment variables)

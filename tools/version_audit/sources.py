@@ -389,19 +389,29 @@ class VersionSources:
         url = docker_url
         numeric_tags: list[str] = []
         prerelease: list[str] = []
+        current_arm64_digests: set[str] = set()
         pages = 0
         while url and pages < 20:
             data = self.client.get_json(_validate_source_url(url))
             pages += 1
             for entry in data.get("results", []):
                 tag = str(entry.get("name", "")).strip()
+                arm64_images = [
+                    image
+                    for image in entry.get("images", [])
+                    if str(image.get("architecture", "")).lower() == "arm64"
+                    and str(image.get("os", "")).lower() == "linux"
+                ]
                 try:
                     parsed = Version(tag)
                 except InvalidVersion:
                     continue
-                architectures = {str(image.get("architecture", "")).lower() for image in entry.get("images", [])}
-                if "arm64" not in architectures:
+                if not arm64_images:
                     continue
+                if tag == declaration.current:
+                    current_arm64_digests.update(
+                        str(image.get("digest", "")).lower() for image in arm64_images if image.get("digest")
+                    )
                 if parsed.is_prerelease or parsed.is_devrelease:
                     prerelease.append(tag)
                 else:
@@ -430,14 +440,39 @@ class VersionSources:
         latest = _highest(stable)
         if latest is None:
             raise SourceError("No ARM64 OpenEMR image matched an official stable OpenEMR release")
+        expected_digest = str(declaration.metadata.get("arm64_digest", "")).strip()
+        digest_url = (
+            "https://hub.docker.com/v2/repositories/openemr/openemr/tags/" f"{quote(declaration.current, safe='')}"
+        )
+        if not re.fullmatch(r"sha256:[0-9a-f]{64}", expected_digest):
+            return Resolution(
+                latest=latest,
+                latest_prerelease=_highest(prerelease, prerelease=True),
+                source_url=digest_url,
+                note="OpenEMR ARM64 digest pin is missing or malformed",
+                current_reference_verified=False,
+            )
+        if expected_digest not in current_arm64_digests:
+            return Resolution(
+                latest=latest,
+                latest_prerelease=_highest(prerelease, prerelease=True),
+                source_url=digest_url,
+                note=(
+                    f"Pinned ARM64 digest {expected_digest} does not match the current "
+                    f"linux/arm64 manifest for openemr/openemr:{declaration.current}"
+                ),
+                current_reference_verified=False,
+            )
         return Resolution(
             latest=latest,
             latest_prerelease=_highest(prerelease, prerelease=True),
             source_url=releases_url,
             note=(
                 "Requires both an ARM64 Docker tag and a matching non-draft, non-prerelease "
-                "OpenEMR GitHub release; numeric development tags are excluded"
+                "OpenEMR GitHub release; numeric development tags are excluded and the pinned "
+                "linux/arm64 digest matches the current tag"
             ),
+            current_reference_verified=True,
         )
 
     def _emr_serverless(self) -> Resolution:
