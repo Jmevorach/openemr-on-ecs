@@ -234,6 +234,22 @@ _TOPICS: dict[str, dict[str, Any]] = {
             "tools/live_e2e/aws.py",
         ],
     },
+    "floci-emulation": {
+        "summary": (
+            "Digest-pinned Floci tests exercise guarded live-E2E AWS, CDK, "
+            "ownership, and cleanup paths locally without real AWS credentials."
+        ),
+        "sources": [
+            "FLOCI.md",
+            ".github/workflows/ci.yml",
+            "compose/docker-compose.floci.yml",
+            "tools/floci_cdk/deploy.py",
+            "tools/live_e2e/emulator.py",
+            "tools/live_e2e/floci_images.py",
+            "tools/live_e2e/floci_seed.py",
+            "tests/tools/test_floci_live_e2e_full.py",
+        ],
+    },
     "troubleshooting": {
         "summary": "The troubleshooting guide covers deployment, health, database, DNS, and cleanup diagnostics.",
         "sources": ["TROUBLESHOOTING.md"],
@@ -464,6 +480,7 @@ class RepositoryKnowledge:
                 "TROUBLESHOOTING.md",
                 "IMPORTING-OPENEMR.md",
                 "LIVE-E2E.md",
+                "FLOCI.md",
                 "KNOWLEDGE-MCP.md",
                 "MAINTAINERS.md",
             ],
@@ -511,6 +528,7 @@ class RepositoryKnowledge:
             "database": "aurora",
             "ecs": "ecs-fargate",
             "fargate": "ecs-fargate",
+            "floci": "floci-emulation",
             "import": "openemr-import",
             "mcp": "knowledge-mcp",
             "route-53": "route53",
@@ -897,6 +915,11 @@ class RepositoryKnowledge:
                 "purpose": "Clean up an interrupted live AWS E2E run",
                 "command": "python3 -m tools.live_e2e cleanup --help",
                 "risk": "destructively deletes only resources bound to the exact E2E ownership marker",
+            },
+            {
+                "purpose": "Run the local Floci live E2E emulation suite",
+                "command": "pytest tests/tools/test_floci_live_e2e_full.py -m floci -q",
+                "risk": "local Docker/CDK emulation only; real AWS endpoints and credentials are rejected",
             },
             {
                 "purpose": "Stack cleanup",

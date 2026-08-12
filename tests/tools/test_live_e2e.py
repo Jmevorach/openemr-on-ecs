@@ -776,6 +776,54 @@ def test_delete_complete_is_a_terminal_cleanup_success(monkeypatch: pytest.Monke
     )
 
 
+def test_emulated_delete_failed_requires_resources_to_be_gone(monkeypatch: pytest.MonkeyPatch) -> None:
+    class CloudFormation:
+        def delete_stack(self, **_: Any) -> dict[str, Any]:
+            return {}
+
+    adapter = LiveE2EAws(
+        region="us-east-1",
+        session=SimpleNamespace(),
+        endpoint_url="http://127.0.0.1:4566",
+        emulated=True,
+    )
+    adapter._clients["cloudformation:False"] = CloudFormation()
+    failed = {
+        "StackId": "stack-arn",
+        "StackStatus": "DELETE_FAILED",
+        "StackStatusReason": "resource still exists",
+    }
+    monkeypatch.setattr(adapter, "_describe_stack_raw", lambda _: failed)
+    monkeypatch.setattr(adapter, "_emulated_delete_tombstone_is_empty", lambda _: False)
+    monkeypatch.setattr("tools.live_e2e.aws.time.sleep", lambda _: None)
+
+    with pytest.raises(ToolError, match="remaining resources"):
+        adapter.wait_for_stack_deleted("stack-arn", timeout_seconds=1, poll_seconds=0.01)
+
+
+def test_emulated_describe_does_not_mask_nonempty_delete_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    failed = {
+        "StackId": "stack-arn",
+        "StackStatus": "DELETE_FAILED",
+        "StackStatusReason": "resource still exists",
+    }
+
+    class CloudFormation:
+        def describe_stacks(self, **_: Any) -> dict[str, Any]:
+            return {"Stacks": [failed]}
+
+    adapter = LiveE2EAws(
+        region="us-east-1",
+        session=SimpleNamespace(),
+        endpoint_url="http://127.0.0.1:4566",
+        emulated=True,
+    )
+    adapter._clients["cloudformation:False"] = CloudFormation()
+    monkeypatch.setattr(adapter, "_emulated_delete_tombstone_is_empty", lambda _: False)
+
+    assert adapter.describe_stack("stack-arn") is failed
+
+
 def test_delete_failed_nonempty_s3_bucket_is_emptied_and_retried(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

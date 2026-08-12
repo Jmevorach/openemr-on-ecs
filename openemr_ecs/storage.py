@@ -20,7 +20,7 @@ from constructs import Construct
 
 from .kms_keys import KmsKeys
 from .nag_suppressions import acknowledge_findings
-from .utils import get_resource_suffix
+from .utils import get_resource_suffix, is_live_e2e_emulated, s3_auto_delete_objects
 
 
 class StorageComponents:
@@ -52,7 +52,7 @@ class StorageComponents:
         self.backup_vault: Optional[backup.BackupVault] = None
         self.import_staging_bucket: Optional[s3.Bucket] = None
 
-    def create_elb_log_bucket(self) -> s3.Bucket:
+    def create_elb_log_bucket(self, context: Optional[dict] = None) -> s3.Bucket:
         """Create S3 bucket for Application Load Balancer access logs.
 
         Note: ALB access logging does not support KMS encryption, only SSE-S3.
@@ -61,11 +61,12 @@ class StorageComponents:
         Returns:
             The created S3 bucket
         """
+        auto_delete = s3_auto_delete_objects(context)
         # Create server access log bucket first (also SSE-S3 since it's for ALB logs)
         elb_access_log_bucket = s3.Bucket(
             self.scope,
             "elb-access-logs-bucket",
-            auto_delete_objects=True,
+            auto_delete_objects=auto_delete,
             removal_policy=RemovalPolicy.DESTROY,
             block_public_access=s3.BlockPublicAccess.BLOCK_ALL,
             encryption=s3.BucketEncryption.S3_MANAGED,  # ALB requires SSE-S3, not KMS
@@ -109,7 +110,7 @@ class StorageComponents:
         self.elb_log_bucket = s3.Bucket(
             self.scope,
             "elb-logs-bucket",
-            auto_delete_objects=True,
+            auto_delete_objects=auto_delete,
             removal_policy=RemovalPolicy.DESTROY,
             block_public_access=s3.BlockPublicAccess.BLOCK_ALL,
             encryption=s3.BucketEncryption.S3_MANAGED,  # ALB requires SSE-S3, not KMS
@@ -476,6 +477,27 @@ class StorageComponents:
         self.efs_volume_configuration_for_ssl_folder = ecs.EfsVolumeConfiguration(
             file_system_id=self.file_system_for_ssl_folder.file_system_id, transit_encryption="ENABLED"
         )
+
+        if is_live_e2e_emulated(context):
+            # Floci cannot attach AWS Backup managed policies, so guarded
+            # emulated stacks omit BackupPlan and acknowledge the resulting EFS
+            # finding only for that local-emulator synthesis.
+            for file_system in (
+                self.file_system_for_sites_folder,
+                self.file_system_for_ssl_folder,
+            ):
+                acknowledge_findings(
+                    file_system,
+                    [
+                        {
+                            "id": "HIPAA.Security-EFSInBackupPlan",
+                            "reason": (
+                                "Guarded Floci live E2E omits AWS Backup because "
+                                "the emulator lacks AWS Backup managed IAM policies"
+                            ),
+                        }
+                    ],
+                )
 
         return (
             self.file_system_for_sites_folder,

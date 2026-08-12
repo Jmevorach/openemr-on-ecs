@@ -51,7 +51,7 @@ jobs:
             --maxfail=1 \
             --disable-warnings \
             -n auto \
-            -m "not integration" \
+            -m "not integration and not floci" \
             -q
 
       - name: Upload coverage to Codecov
@@ -101,6 +101,118 @@ jobs:
             --max-line-length=120 --extend-ignore=E203,W503,E501
           isort --check-only tools/_shared.py tools/knowledge_mcp tests/tools/test_knowledge_mcp.py
           mypy tools/_shared.py tools/knowledge_mcp
+
+  floci-e2e:
+    name: Floci Live E2E Emulation
+    runs-on: ubuntu-26.04
+    timeout-minutes: 40
+    env:
+      # This job is local-emulator-only. It must never receive AWS credentials.
+      AWS_EC2_METADATA_DISABLED: "true"
+      OPENEMR_FLOCI_IMAGE: "floci/floci:1.6.0@sha256:eab36252ea43a4a73928423f0372219052c5c6f87207f6c4754db14b91d6ed30"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Verify no AWS credentials are present
+        shell: bash
+        run: |
+          if [[ -n "${AWS_ACCESS_KEY_ID:-}" || -n "${AWS_SECRET_ACCESS_KEY:-}" || \
+                -n "${AWS_SESSION_TOKEN:-}" || -n "${AWS_PROFILE:-}" ]]; then
+            echo "Refusing to run local Floci lifecycle tests with AWS credentials."
+            exit 1
+          fi
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Allow Floci local ECR over plain HTTP
+        run: |
+          # Floci serves ECR at http://<account>.dkr.ecr.<region>.localhost:5100.
+          # Docker defaults to HTTPS, so configure the local registry before
+          # QEMU/buildx are created and fail closed if Docker cannot restart.
+          sudo python3 - <<'PY'
+          from __future__ import annotations
+
+          import json
+          from pathlib import Path
+
+          path = Path("/etc/docker/daemon.json")
+          path.parent.mkdir(parents=True, exist_ok=True)
+          current: dict[str, object] = {}
+          if path.is_file() and path.stat().st_size:
+              loaded = json.loads(path.read_text(encoding="utf-8"))
+              if isinstance(loaded, dict):
+                  current = loaded
+          registries = current.get("insecure-registries", [])
+          if not isinstance(registries, list):
+              registries = []
+          required = {
+              "123456789012.dkr.ecr.us-east-1.localhost:5100",
+              "localhost:5100",
+              "127.0.0.1:5100",
+          }
+          current["insecure-registries"] = sorted({str(item) for item in registries} | required)
+          path.write_text(json.dumps(current, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          print(path.read_text(encoding="utf-8"))
+          PY
+          sudo systemctl restart docker
+          docker info
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
+        with:
+          platforms: arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Install pinned dependencies
+        run: |
+          python -m pip install "pip==${PIP_VERSION}"
+          pip install -r requirements.txt -r requirements-dev.txt
+          npm ci
+
+      - name: Pull pinned Floci image
+        run: docker pull "${OPENEMR_FLOCI_IMAGE}"
+
+      - name: Prepare Floci RDS and ElastiCache images
+        run: |
+          python - <<'PY'
+          from tools.live_e2e.floci_images import ensure_floci_runtime_images
+
+          print("prepared:", ", ".join(ensure_floci_runtime_images()))
+          PY
+
+      - name: Execute Floci lifecycle suite
+        env:
+          # This is the only guard that permits the live E2E runner to operate
+          # in CI, and the endpoint helper also requires a local Floci URL.
+          OPENEMR_FLOCI_E2E: "1"
+        run: |
+          pytest tests/tools/test_floci_e2e.py -m floci -k "not mocked_runner" --maxfail=1 -q
+          pytest tests/tools/test_floci_e2e.py -m floci -k "mocked_runner" --maxfail=1 -q
+          pytest tests/tools/test_floci_cdk_deploy.py -m floci --maxfail=1 -q
+          pytest tests/tools/test_floci_live_e2e_full.py -m floci --maxfail=1 -q
+
+      - name: Upload Floci lifecycle diagnostics
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: floci-live-e2e-diagnostics
+          path: |
+            .live-e2e/runs/**
+            .live-e2e/preflight/**
+          if-no-files-found: ignore
+          retention-days: 7
 
   credential-rotation-tests:
     name: Credential Rotation Tests
