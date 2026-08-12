@@ -36,6 +36,35 @@ rather than relying on floating CI ranges.
 - Normal CDK deployment and operational scripts can change AWS resources. Use
   them only after reviewing their documented confirmation procedures.
 
+## Read-only repository knowledge MCP
+
+The optional local knowledge server gives MCP-capable assistants bounded,
+redacted context about this repository. Start its STDIO entry point from the
+repository root after installing the project dependencies:
+
+```bash
+.venv/bin/python -m tools.knowledge_mcp
+```
+
+Use [KNOWLEDGE-MCP.md](KNOWLEDGE-MCP.md) for client configuration, the complete
+tool and resource inventory, output limits, examples, and troubleshooting.
+
+The server is repository-root constrained and local-only. It has no write,
+shell, subprocess, AWS, or network operations; rejects traversal, symlinks,
+secret-like paths, unsupported or oversized files; redacts sensitive output;
+and returns operational commands as documentation without executing them.
+
+Run its focused checks before changing it:
+
+```bash
+.venv/bin/pytest tests/tools/test_knowledge_mcp.py -q
+.venv/bin/black --check tools/_shared.py tools/knowledge_mcp tests/tools/test_knowledge_mcp.py
+.venv/bin/flake8 tools/_shared.py tools/knowledge_mcp tests/tools/test_knowledge_mcp.py \
+  --max-line-length=120 --extend-ignore=E203,W503,E501
+.venv/bin/isort --check-only tools/_shared.py tools/knowledge_mcp tests/tools/test_knowledge_mcp.py
+.venv/bin/mypy tools/_shared.py tools/knowledge_mcp
+```
+
 ## Version audit
 
 Inventory supported dependency, platform, container, action, and toolchain
