@@ -52,6 +52,7 @@ class OpenemrEcsStack(Stack):
             "certificate_arn",
             "email_forwarding_address",
             "route53_domain",
+            "openemr_import_target",
             "openemr_service_fargate_minimum_capacity",
             "openemr_service_fargate_maximum_capacity",
             "openemr_service_fargate_cpu",
@@ -135,6 +136,7 @@ class OpenemrEcsStack(Stack):
         # Create network infrastructure
         self.vpc = network.create_vpc()
         db_sec_group, valkey_sec_group, lb_sec_group = network.create_security_groups(self.vpc, context)
+        self.db_security_group = db_sec_group
         self.db_sec_group = db_sec_group
         self.valkey_sec_group = valkey_sec_group
         self.lb_sec_group = lb_sec_group
@@ -150,6 +152,29 @@ class OpenemrEcsStack(Stack):
             description="Security group for ECS Fargate tasks",
             allow_all_outbound=False,
         )
+        if is_true(context.get("openemr_import_target")):
+            self.import_task_sec_group = ec2.SecurityGroup(
+                self,
+                "OpenEMRImportTaskSecurityGroup",
+                vpc=self.vpc,
+                description="No-ingress security group for guarded OpenEMR import tasks",
+                allow_all_outbound=False,
+            )
+            self.db_sec_group.add_ingress_rule(
+                self.import_task_sec_group,
+                ec2.Port.tcp(3306),
+                "Allow MySQL connections from guarded import tasks",
+            )
+            self.import_task_sec_group.add_egress_rule(
+                self.db_sec_group,
+                ec2.Port.tcp(3306),
+                "Allow guarded import tasks to connect to MySQL",
+            )
+            self.import_task_sec_group.add_egress_rule(
+                ec2.Peer.any_ipv4(),
+                ec2.Port.tcp(443),
+                "Allow guarded import tasks to reach AWS APIs over HTTPS",
+            )
 
         # Allow ingress from ECS task security group to database, valkey, and EFS
         # These rules are set up BEFORE service creation to avoid circular dependencies
@@ -180,6 +205,11 @@ class OpenemrEcsStack(Stack):
 
         # Create storage infrastructure
         self.elb_log_bucket = storage.create_elb_log_bucket()
+        if is_true(context.get("openemr_import_target")):
+            self.import_staging_bucket = storage.create_import_staging_bucket(
+                self.elb_log_bucket,
+                self.kms_keys.s3_key,
+            )
 
         if is_true(context.get("enable_long_term_cloudtrail_monitoring")):
             cloudtrail_result = storage.create_cloudtrail_logging(self.region)
@@ -307,6 +337,7 @@ class OpenemrEcsStack(Stack):
         # Allow EFS connections from ECS task security group (NFS port 2049)
         # EFS rules are added after EFS volumes are created
         sites_efs_sg = self.file_system_for_sites_folder.connections.security_groups[0]
+        self.sites_efs_security_group = sites_efs_sg
         ssl_efs_sg = self.file_system_for_ssl_folder.connections.security_groups[0]
         sites_efs_sg.add_ingress_rule(
             self.ecs_task_sec_group, ec2.Port.tcp(2049), "Allow NFS connections from ECS tasks"
@@ -327,6 +358,17 @@ class OpenemrEcsStack(Stack):
             sites_efs_sg, ec2.Port.tcp(2049), "Allow ECS tasks to connect to sites EFS"
         )
         self.ecs_task_sec_group.add_egress_rule(ssl_efs_sg, ec2.Port.tcp(2049), "Allow ECS tasks to connect to SSL EFS")
+        if is_true(context.get("openemr_import_target")):
+            sites_efs_sg.add_ingress_rule(
+                self.import_task_sec_group,
+                ec2.Port.tcp(2049),
+                "Allow NFS connections from guarded import tasks",
+            )
+            self.import_task_sec_group.add_egress_rule(
+                sites_efs_sg,
+                ec2.Port.tcp(2049),
+                "Allow guarded import tasks to connect to sites EFS",
+            )
 
         # Add load balancer to ECS task security group rules (HTTPS port 443)
         # Load balancer needs to reach ECS tasks on container port
@@ -467,6 +509,23 @@ class OpenemrEcsStack(Stack):
             self.openemr_service.service.service_name,
             self.alb.load_balancer_dns_name,
         )
+        if is_true(context.get("openemr_import_target")):
+            if self.db_secret is None:
+                raise RuntimeError("Database secret is required for the OpenEMR import task")
+            (
+                import_efs_volume_configuration,
+                import_efs_access_point,
+            ) = storage.create_import_efs_volume_configuration(self.file_system_for_sites_folder)
+            self.import_efs_access_point = import_efs_access_point
+            self.import_task_definition = compute.create_openemr_import_task(
+                self.log_group,
+                import_efs_volume_configuration,
+                self.file_system_for_sites_folder,
+                import_efs_access_point,
+                self.db_secret,
+                self.import_staging_bucket,
+                self.openemr_version,
+            )
 
         # Create serverless analytics environment (optional)
         self.sagemaker_domain_id = None
@@ -851,6 +910,73 @@ def handler(event, context):
             value=self.credential_rotation_task_definition.task_definition_arn,
             description="ARN of ECS task definition used for credential rotation runs",
         )
+        if is_true(context.get("openemr_import_target")):
+            CfnOutput(
+                self,
+                "OpenEMRImportTaskDefinitionArn",
+                value=self.import_task_definition.task_definition_arn,
+                description="ARN of the dormant one-off OpenEMR import task definition",
+            )
+            CfnOutput(
+                self,
+                "OpenEMRImportTargetMode",
+                value="fresh-target-only",
+                description="Whether this stack was explicitly deployed as a fresh import target",
+            )
+            CfnOutput(
+                self,
+                "OpenEMRImportStagingBucketName",
+                value=self.import_staging_bucket.bucket_name,
+                description="Private KMS-encrypted bucket for temporary OpenEMR import staging",
+            )
+            CfnOutput(
+                self,
+                "OpenEMRImportStagingKmsKeyArn",
+                value=self.kms_keys.s3_key.key_arn,
+                description="Customer-managed KMS key used by the OpenEMR import staging bucket",
+            )
+            CfnOutput(
+                self,
+                "OpenEMRImportSecurityGroupId",
+                value=self.import_task_sec_group.security_group_id,
+                description="No-ingress security group dedicated to guarded import tasks",
+            )
+            CfnOutput(
+                self,
+                "OpenEMRImportDatabaseSecurityGroupId",
+                value=self.db_security_group.security_group_id,
+                description="Database security group targeted by guarded import task egress",
+            )
+            CfnOutput(
+                self,
+                "OpenEMRImportEfsSecurityGroupId",
+                value=self.sites_efs_security_group.security_group_id,
+                description="Sites EFS security group targeted by guarded import task egress",
+            )
+            CfnOutput(
+                self,
+                "OpenEMRImportEfsAccessPointId",
+                value=self.import_efs_access_point.access_point_id,
+                description="EFS access point required by guarded import tasks",
+            )
+            CfnOutput(
+                self,
+                "PrivateSubnetIds",
+                value=",".join(subnet.subnet_id for subnet in self.vpc.private_subnets),
+                description="Comma-separated private subnet IDs used by guarded one-off tasks",
+            )
+            CfnOutput(
+                self,
+                "DatabaseClusterArn",
+                value=self.db_instance.cluster_arn,
+                description="Aurora cluster ARN used to verify import recovery points",
+            )
+            CfnOutput(
+                self,
+                "OpenEMRVersion",
+                value=self.openemr_version,
+                description="OpenEMR container version used by the deployed stack",
+            )
 
         # Stack termination protection status
         if self.enable_termination_protection:

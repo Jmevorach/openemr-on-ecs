@@ -199,6 +199,14 @@ jobs:
           echo "Testing multiple configurations to ensure all features work..."
           python3 scripts/test-cdk-synthesis.py
 
+      - name: Set up ARM64 emulation
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
+        with:
+          platforms: arm64
+
+      - name: Build isolated import worker image
+        run: docker buildx build --platform linux/arm64 --load --tag openemr-import-worker:ci tools/openemr-import-worker
+
   code-quality:
     name: Code Quality Checks
     runs-on: ubuntu-26.04
@@ -227,6 +235,7 @@ jobs:
         run: >-
           mypy app.py openemr_ecs/ diagrams/ tools/_shared.py
           tools/version_audit/
+          tools/openemr_import/ tools/openemr-import-worker/worker.py
           tools/credential-rotation/src/ scripts/check_npm_audit.py
           scripts/test-cdk-synthesis.py
 
@@ -255,11 +264,13 @@ jobs:
         run: bandit -r app.py openemr_ecs/ diagrams/ tools/ scripts/check_npm_audit.py scripts/test-cdk-synthesis.py -ll
 
       - name: Audit Python dependencies
-        run: >-
-          pip-audit --strict --progress-spinner off
-          -r requirements.txt
-          -r requirements-dev.txt
-          -r tools/credential-rotation/requirements.txt
+        run: |
+          pip-audit --strict --progress-spinner off \
+            -r requirements.txt \
+            -r requirements-dev.txt \
+            -r tools/credential-rotation/requirements.txt
+          pip-audit --strict --progress-spinner off \
+            -r tools/openemr-import-worker/requirements.txt
 
   shellcheck:
     name: Shell Script Validation
@@ -411,6 +422,11 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up ARM64 emulation
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
+        with:
+          platforms: arm64
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
@@ -576,3 +592,33 @@ jobs:
         run: |
           cd compose
           docker compose -f docker-compose.test-ssl.yml down -v || true
+
+  import-worker-mysql-integration:
+    name: Import Worker MySQL Integration
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up ARM64 emulation
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
+        with:
+          platforms: arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Run live TLS MySQL import-worker harness
+        env:
+          IMPORT_CI_WAIT_SECONDS: "1200"
+        run: ./scripts/ci-import-worker-mysql.sh
+
+      - name: Upload import-worker MySQL diagnostics
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: import-worker-mysql-ci-logs
+          path: .import-worker-mysql-ci/logs/
+          if-no-files-found: ignore

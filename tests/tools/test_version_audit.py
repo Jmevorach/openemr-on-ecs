@@ -31,10 +31,16 @@ def _repository(tmp_path: Path) -> Path:
     (tmp_path / ".github" / "workflows").mkdir(parents=True)
     (tmp_path / "scripts" / "backup-tui").mkdir(parents=True)
     (tmp_path / "tools" / "credential-rotation").mkdir(parents=True)
+    (tmp_path / "tools" / "openemr-import-worker").mkdir(parents=True)
     (tmp_path / "cdk.json").write_text('{"context": {}}\n', encoding="utf-8")
     (tmp_path / "requirements.txt").write_text("", encoding="utf-8")
     (tmp_path / "requirements-dev.txt").write_text("", encoding="utf-8")
     (tmp_path / "tools" / "credential-rotation" / "requirements.txt").write_text("", encoding="utf-8")
+    (tmp_path / "tools" / "openemr-import-worker" / "requirements.in").write_text(
+        "",
+        encoding="utf-8",
+    )
+    (tmp_path / "tools" / "openemr-import-worker" / "requirements.txt").write_text("", encoding="utf-8")
     return tmp_path
 
 
@@ -65,6 +71,16 @@ def test_python_inventory_parses_pep508_and_deduplicates(tmp_path: Path) -> None
         "boto3==1.2.3\n",
         encoding="utf-8",
     )
+    (root / "tools" / "openemr-import-worker" / "requirements.in").write_text(
+        "packaging==26.3\n",
+        encoding="utf-8",
+    )
+    (root / "tools" / "openemr-import-worker" / "requirements.txt").write_text(
+        "botocore==1.43.69 \\\n"
+        "    --hash=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \\\n"
+        "    --hash=sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n",
+        encoding="utf-8",
+    )
 
     declarations = {item.identifier: item for item in collect_python_declarations(root)}
 
@@ -75,6 +91,10 @@ def test_python_inventory_parses_pep508_and_deduplicates(tmp_path: Path) -> None
     assert demo.metadata["markers"] == ['python_version >= "3.12"']
     assert declarations["python:requests"].current == "<3,>=2.0"
     assert declarations["python:boto3"].current == "1.2.3"
+    assert declarations["python:packaging"].current == "26.3"
+    assert "openemr-import-worker/requirements.in:1" in declarations["python:packaging"].definition
+    assert declarations["python:botocore"].current == "1.43.69"
+    assert "openemr-import-worker/requirements.txt:1" in declarations["python:botocore"].definition
 
 
 def test_python_inventory_reports_malformed_requirement(tmp_path: Path) -> None:

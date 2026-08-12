@@ -9,7 +9,6 @@ services:
       - -c
       - |
         set -e
-        set -x
         log() { echo "[$$(date +%Y-%m-%d\ %H:%M:%S)] $$*"; }
         log "=== OpenEMR Container Startup Script ==="
         log "Starting container initialization..."
@@ -184,16 +183,22 @@ services:
           for attempt in $$(seq 1 $$MAX_ATTEMPTS); do
             # Use mysqladmin ping if available, otherwise fall back to nc (netcat)
             if command -v mysqladmin >/dev/null 2>&1; then
-              MYSQLADMIN_CMD="mysqladmin ping -h \"$$MYSQL_HOST\" -u \"$$MYSQL_ROOT_USER\" -p\"$$MYSQL_ROOT_PASS\""
-              # Always use TLS for DB connections (matches production)
+              # MariaDB's mysqladmin uses --ssl instead of MySQL's --ssl-mode=REQUIRED
               if [ -n "$$MYSQL_CA_PATH" ] && [ -f "$$MYSQL_CA_PATH" ]; then
-                MYSQLADMIN_CMD="$$MYSQLADMIN_CMD --ssl-ca=\"$$MYSQL_CA_PATH\" --ssl-mode=REQUIRED"
+                if MYSQL_PWD="$$MYSQL_ROOT_PASS" mysqladmin ping \
+                  -h "$$MYSQL_HOST" -u "$$MYSQL_ROOT_USER" \
+                  --ssl --ssl-ca="$$MYSQL_CA_PATH" --silent 2>/dev/null; then
+                  DB_READY=1
+                fi
               else
-                MYSQLADMIN_CMD="$$MYSQLADMIN_CMD --ssl-mode=REQUIRED"
+                if MYSQL_PWD="$$MYSQL_ROOT_PASS" mysqladmin ping \
+                  -h "$$MYSQL_HOST" -u "$$MYSQL_ROOT_USER" \
+                  --ssl --silent 2>/dev/null; then
+                  DB_READY=1
+                fi
               fi
-              if eval "$$MYSQLADMIN_CMD" --silent 2>/dev/null; then
+              if [ "$$DB_READY" -eq 1 ]; then
                 log "Database connectivity verified (attempt $$attempt/$$MAX_ATTEMPTS)"
-                DB_READY=1
                 break
               fi
             elif command -v nc >/dev/null 2>&1 && [ -n "$$MYSQL_PORT" ]; then

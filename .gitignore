@@ -36,6 +36,8 @@ Thumbs.db
 htmlcov/
 .pytest_cache/
 mysql-ssl-ca/
+.import-worker-mysql-ci/
+.openemr-import/
 
 # Source Code
 openemr-master

@@ -28,6 +28,7 @@
     "openemr_service_fargate_memory": 4096,
     "openemr_service_fargate_cpu_autoscaling_percentage": 40,
     "openemr_service_fargate_memory_autoscaling_percentage": 40,
+    "openemr_import_target": false,
     "rds_deletion_protection": false,
     "disable_rds_deletion_protection_on_destroy": false,
     "enable_long_term_cloudtrail_monitoring": "true",

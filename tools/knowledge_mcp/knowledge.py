@@ -44,6 +44,7 @@ MAX_VERSION_VALUE_CHARS = 500
 _DOCUMENTATION_EXTENSIONS = {".md", ".rst"}
 _ALLOWED_EXTENSIONS = {
     ".go",
+    ".in",
     ".json",
     ".md",
     ".mod",
@@ -65,6 +66,7 @@ _TOP_LEVEL_FILES = {
     "CONTRIBUTING.md",
     "DETAILS.md",
     "GETTING-STARTED.md",
+    "IMPORTING-OPENEMR.md",
     "KNOWLEDGE-MCP.md",
     "MAINTAINERS.md",
     "README-TESTING.md",
@@ -179,7 +181,14 @@ _TOPICS: dict[str, dict[str, Any]] = {
     },
     "versions": {
         "summary": "The local inventory reports declared project, dependency, container, and runtime versions.",
-        "sources": ["VERSION", "requirements.txt", "requirements-dev.txt", "openemr_ecs/constants.py"],
+        "sources": [
+            "VERSION",
+            "requirements.txt",
+            "requirements-dev.txt",
+            "tools/openemr-import-worker/requirements.in",
+            "tools/openemr-import-worker/requirements.txt",
+            "openemr_ecs/constants.py",
+        ],
     },
     "ci": {
         "summary": "GitHub Actions runs tests, synthesis, security checks, and static validation without deployment.",
@@ -196,6 +205,21 @@ _TOPICS: dict[str, dict[str, Any]] = {
     "restore": {
         "summary": "Restore procedures use AWS Backup recovery points and require post-restore validation.",
         "sources": ["BACKUP-RESTORE-GUIDE.md", "scripts/restore-from-backup.sh"],
+    },
+    "openemr-import": {
+        "summary": (
+            "The guarded import utility inspects native backups offline, requires a "
+            "fresh same-version target, and keeps destructive AWS execution explicit."
+        ),
+        "sources": [
+            "IMPORTING-OPENEMR.md",
+            "docs/adr/0001-guarded-openemr-import.md",
+            "tools/openemr_import/cli.py",
+            "tools/openemr_import/aws.py",
+            "tools/openemr-import-worker/worker.py",
+            "openemr_ecs/compute.py",
+            "openemr_ecs/storage.py",
+        ],
     },
     "troubleshooting": {
         "summary": "The troubleshooting guide covers deployment, health, database, DNS, and cleanup diagnostics.",
@@ -331,7 +355,16 @@ class RepositoryKnowledge:
                                     information.st_size,
                                 )
                             )
-                        except OSError:
+                        except OSError as exc:
+                            relative = (current_path / entry.name).relative_to(self.root)
+                            if (
+                                validate_documents
+                                and self._is_allowed_relative(relative)
+                                and relative.suffix.lower() in _DOCUMENTATION_EXTENSIONS
+                            ):
+                                raise KnowledgeError(
+                                    "Documentation source cannot be inspected: " f"{relative.as_posix()}"
+                                ) from exc
                             continue
             except OSError as exc:
                 raise KnowledgeError(f"Unable to enumerate approved repository path: {exc}") from exc
@@ -341,6 +374,12 @@ class RepositoryKnowledge:
                 path = current_path / name
                 relative = path.relative_to(self.root)
                 if is_symlink:
+                    if (
+                        validate_documents
+                        and self._is_allowed_relative(relative)
+                        and relative.suffix.lower() in _DOCUMENTATION_EXTENSIONS
+                    ):
+                        raise KnowledgeError(f"Documentation source is symlinked: {relative.as_posix()}")
                     continue
                 if is_directory:
                     if self._directory_is_allowed(relative):
@@ -410,6 +449,7 @@ class RepositoryKnowledge:
                 "ARCHITECTURE.md",
                 "DETAILS.md",
                 "TROUBLESHOOTING.md",
+                "IMPORTING-OPENEMR.md",
                 "KNOWLEDGE-MCP.md",
                 "MAINTAINERS.md",
             ],
@@ -457,6 +497,7 @@ class RepositoryKnowledge:
             "database": "aurora",
             "ecs": "ecs-fargate",
             "fargate": "ecs-fargate",
+            "import": "openemr-import",
             "mcp": "knowledge-mcp",
             "route-53": "route53",
             "valkey": "elasticache",
@@ -618,6 +659,8 @@ class RepositoryKnowledge:
             "requirements.txt",
             "scripts/backup-tui/go.mod",
             "tools/credential-rotation/requirements.txt",
+            "tools/openemr-import-worker/requirements.in",
+            "tools/openemr-import-worker/requirements.txt",
         }
         for path in self._safe_files():
             relative = _relative(self.root, path)
@@ -775,6 +818,51 @@ class RepositoryKnowledge:
                 "purpose": "Restore",
                 "command": "scripts/restore-from-backup.sh",
                 "risk": "destructive/high-risk recovery operation",
+            },
+            {
+                "purpose": "Inspect an OpenEMR import source",
+                "command": "python3 -m tools.openemr_import inspect --help",
+                "risk": "local, offline, read-only source inspection",
+            },
+            {
+                "purpose": "Plan a guarded OpenEMR import",
+                "command": "python3 -m tools.openemr_import plan --help",
+                "risk": "local, offline planning; writes no patient data",
+            },
+            {
+                "purpose": "Execute a guarded OpenEMR import",
+                "command": "python3 -m tools.openemr_import execute --help",
+                "risk": ("destructive AWS/OpenEMR mutation and downtime; all documented " "confirmations are required"),
+            },
+            {
+                "purpose": "Reconcile an uncertain import task launch",
+                "command": "python3 -m tools.openemr_import reconcile-launch --help",
+                "risk": "may restore service and remove a migration scope after bounded verification",
+            },
+            {
+                "purpose": "Recover an interrupted import from its local baseline",
+                "command": "python3 -m tools.openemr_import recover --help",
+                "risk": "destructively restores the pre-import database and EFS baseline",
+            },
+            {
+                "purpose": "Finalize a successful OpenEMR import",
+                "command": "python3 -m tools.openemr_import finalize --help",
+                "risk": "restarts the application and resumes autoscaling",
+            },
+            {
+                "purpose": "Abort a failed OpenEMR import",
+                "command": "python3 -m tools.openemr_import abort --help",
+                "risk": "restores service and deletes failed-attempt artifacts after verification",
+            },
+            {
+                "purpose": "Read guarded OpenEMR import status",
+                "command": "python3 -m tools.openemr_import status --help",
+                "risk": "read-only AWS and local-state inspection",
+            },
+            {
+                "purpose": "Clean up a completed OpenEMR import",
+                "command": "python3 -m tools.openemr_import cleanup --help",
+                "risk": "permanently deletes rollback and staging artifacts",
             },
             {
                 "purpose": "Stack cleanup",

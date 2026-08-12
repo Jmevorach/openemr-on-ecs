@@ -15,6 +15,7 @@ This directory contains various helper scripts for deployment, testing, and vali
 - [Testing Scripts](#testing-scripts)
   - [`test-startup.sh`](#test-startupsh)
   - [`test-startup-ssl.sh`](#test-startup-sslsh)
+  - [`ci-import-worker-mysql.sh`](#ci-import-worker-mysqlsh)
 - [SSL Certificate Scripts](#ssl-certificate-scripts)
   - [`mysql-entrypoint-wrapper.sh`](#mysql-entrypoint-wrappersh)
   - [`mysql-ssl-setup.sh` and `redis-ssl-setup.sh`](#mysql-ssl-setupsh-and-redis-ssl-setupsh)
@@ -577,6 +578,23 @@ See [README-TESTING.md](../README-TESTING.md) for detailed usage.
 ```
 
 See [README-TESTING.md](../README-TESTING.md) for detailed usage.
+
+---
+
+### `ci-import-worker-mysql.sh`
+
+**Purpose:** Build the isolated import worker and run its happy-path and
+automatic-rollback database/site phases against the TLS OpenEMR and MariaDB
+Compose stack.
+
+**Usage:**
+```bash
+./scripts/ci-import-worker-mysql.sh
+```
+
+This is a slow integration harness. It uses synthetic data only and does not
+contact AWS. See [IMPORTING-OPENEMR.md](../IMPORTING-OPENEMR.md) for coverage
+and limitations.
 
 ---
 

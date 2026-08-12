@@ -3,6 +3,7 @@ constructs==10.8.1
 cdk-nag==3.0.2
 requests==2.34.2
 boto3==1.43.69
+packaging==26.3
 
 # Credential rotation tool (tools/credential-rotation)
 pymysql==1.2.0

@@ -1,0 +1,30 @@
+FROM python:3.14-alpine@sha256:a1321512d6a287428c50dcdf2ab3857761127e03a23b1f648e9c1c0de59288f8 AS base
+
+RUN apk add --no-cache \
+      ca-certificates=20260611-r0 \
+      curl=8.21.0-r0 \
+      mariadb-client=11.8.8-r0 \
+    && curl --fail --silent --show-error --location \
+      --output /etc/ssl/certs/aws-rds-global.pem \
+      https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem \
+    && echo "e5bb2084ccf45087bda1c9bffdea0eb15ee67f0b91646106e466714f9de3c7e3  /etc/ssl/certs/aws-rds-global.pem" \
+      | sha256sum -c - \
+    && adduser -D -u 1000 importer \
+    && mkdir -p /work /fixtures \
+    && chown importer:importer /work /fixtures
+
+WORKDIR /app
+COPY requirements.txt .
+RUN python -m pip install --no-cache-dir --only-binary=:all: --require-hashes --requirement requirements.txt
+
+COPY worker.py fresh-seed-manifest.json ./
+
+USER importer
+ENTRYPOINT ["python", "/app/worker.py"]
+
+FROM base AS ci
+USER root
+COPY ci_prepare_mysql_fixtures.py ci_live_mysql_import.py .
+USER importer
+
+FROM base AS production

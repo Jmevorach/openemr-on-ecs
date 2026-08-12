@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
+import secrets
 import stat
 import tempfile
 from datetime import datetime, timezone
@@ -110,10 +112,313 @@ def repository_root(start: Path | None = None) -> Path:
     raise ToolError(f"Unable to locate repository root from {current}")
 
 
+def ensure_owner_only_directory(
+    path: Path,
+    *,
+    parents: bool = False,
+    exist_ok: bool = True,
+    label: str = "state",
+) -> None:
+    """Create or validate an owner-only directory without following symlinks."""
+
+    descriptor = _open_owner_only_directory(
+        path,
+        parents=parents,
+        exist_ok=exist_ok,
+        label=label,
+    )
+    os.close(descriptor)
+
+
+def _open_owner_only_directory(
+    path: Path,
+    *,
+    parents: bool,
+    exist_ok: bool = True,
+    label: str,
+) -> int:
+    if not _SUPPORTS_SAFE_OPEN:
+        raise ToolError(f"This platform cannot safely open the {label} directory")
+    absolute = path.expanduser()
+    if not absolute.is_absolute():
+        absolute = Path.cwd() / absolute
+    parts = absolute.parts
+    if not parts or not absolute.anchor:
+        raise ToolError(f"Invalid {label} directory")
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    descriptor = os.open(absolute.anchor, flags)
+    created_final = False
+    try:
+        for index, part in enumerate(parts[1:]):
+            final = index == len(parts[1:]) - 1
+            try:
+                child = os.open(part, flags, dir_fd=descriptor)
+                if final and not exist_ok:
+                    os.close(child)
+                    raise FileExistsError(path)
+            except FileNotFoundError:
+                if not final and not parents:
+                    raise
+                os.mkdir(part, mode=0o700, dir_fd=descriptor)
+                child = os.open(part, flags, dir_fd=descriptor)
+                if final:
+                    created_final = True
+            os.close(descriptor)
+            descriptor = child
+        information = os.fstat(descriptor)
+        if not stat.S_ISDIR(information.st_mode) or information.st_uid != os.geteuid():
+            raise ToolError(f"{label.capitalize()} path is not an owned private directory")
+        if not created_final and not exist_ok:
+            raise FileExistsError(path)
+        os.fchmod(descriptor, 0o700)
+        return descriptor
+    except FileExistsError:
+        os.close(descriptor)
+        raise
+    except OSError as exc:
+        os.close(descriptor)
+        raise ToolError(f"Refusing symlinked {label} or unsafe directory") from exc
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _private_parent_descriptor(path: Path, *, label: str) -> tuple[int, str]:
+    name = path.name
+    if not name or name in {".", ".."} or "/" in name or "\x00" in name:
+        raise ToolError(f"Invalid {label} filename")
+    ensure_owner_only_directory(path.parent, parents=True, label=label)
+    descriptor = _open_owner_only_directory(
+        path.parent,
+        parents=False,
+        label=label,
+    )
+    return descriptor, name
+
+
+def _private_file_information(descriptor: int, *, label: str) -> os.stat_result:
+    information = os.fstat(descriptor)
+    if (
+        not stat.S_ISREG(information.st_mode)
+        or information.st_uid != os.geteuid()
+        or stat.S_IMODE(information.st_mode) & 0o077
+    ):
+        raise ToolError(f"{label.capitalize()} file is not an owned private regular file")
+    return information
+
+
+def reserve_private_json(path: Path, value: Any, *, label: str = "state") -> None:
+    """Create one owner-only JSON file, failing if the name already exists."""
+
+    parent, name = _private_parent_descriptor(path, label=label)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    try:
+        descriptor = os.open(name, flags, 0o600, dir_fd=parent)
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(f"{json.dumps(value, sort_keys=True)}\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.fsync(parent)
+    finally:
+        os.close(parent)
+
+
+def atomic_write_private_json(path: Path, value: Any, *, label: str = "state") -> None:
+    """Atomically replace an owner-only JSON file without following symlinks."""
+
+    parent, name = _private_parent_descriptor(path, label=label)
+    temporary_name = f".{name}.{secrets.token_hex(12)}"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    try:
+        try:
+            existing = os.open(
+                name,
+                os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0),
+                dir_fd=parent,
+            )
+        except FileNotFoundError:
+            existing = None
+        except OSError as exc:
+            raise ToolError(f"{label.capitalize()} file is symlinked or unsafe") from exc
+        if existing is not None:
+            try:
+                _private_file_information(existing, label=label)
+            finally:
+                os.close(existing)
+        descriptor = os.open(temporary_name, flags, 0o600, dir_fd=parent)
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
+                handle.write(f"{json.dumps(value, indent=2, sort_keys=True, ensure_ascii=False)}\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(
+                temporary_name,
+                name,
+                src_dir_fd=parent,
+                dst_dir_fd=parent,
+            )
+            os.fsync(parent)
+        except BaseException:
+            try:
+                os.unlink(temporary_name, dir_fd=parent)
+            except FileNotFoundError:
+                pass
+            raise
+    finally:
+        os.close(parent)
+
+
+def read_private_json(
+    path: Path,
+    *,
+    max_bytes: int = 256_000,
+    label: str = "state",
+) -> Any:
+    """Read one bounded owner-only JSON file without following symlinks."""
+
+    parent, name = _private_parent_descriptor(path, label=label)
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(
+            name,
+            os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0),
+            dir_fd=parent,
+        )
+        information = _private_file_information(descriptor, label=label)
+        if information.st_size > max_bytes:
+            raise ToolError(f"{label.capitalize()} file exceeds the {max_bytes}-byte limit")
+        payload = bytearray()
+        while len(payload) <= max_bytes:
+            chunk = os.read(descriptor, min(65_536, max_bytes + 1 - len(payload)))
+            if not chunk:
+                break
+            payload.extend(chunk)
+        if len(payload) > max_bytes:
+            raise ToolError(f"{label.capitalize()} file grew beyond the {max_bytes}-byte limit")
+        return json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ToolError(f"{label.capitalize()} file is not valid JSON") from exc
+    except OSError as exc:
+        raise ToolError(f"{label.capitalize()} file is symlinked or unsafe") from exc
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        os.close(parent)
+
+
+def snapshot_regular_file(
+    source: Path,
+    private_directory: Path,
+    *,
+    max_bytes: int,
+    label: str = "source",
+) -> Path:
+    """Copy one no-follow regular file into an owner-only immutable snapshot."""
+
+    if max_bytes < 1:
+        raise ValueError("max_bytes must be positive")
+    if not _SUPPORTS_SAFE_OPEN:
+        raise ToolError(f"This platform cannot safely snapshot the {label}")
+    absolute = source.expanduser()
+    if not absolute.is_absolute():
+        absolute = Path.cwd() / absolute
+    if len(absolute.parts) < 2:
+        raise ToolError(f"Invalid {label} path")
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    source_flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0)
+    source_parent = os.open(absolute.anchor, directory_flags)
+    source_descriptor: int | None = None
+    destination_parent: int | None = None
+    destination_name = f".{label.replace(' ', '-')}.{secrets.token_hex(12)}.snapshot"
+    try:
+        for part in absolute.parts[1:-1]:
+            child = os.open(part, directory_flags, dir_fd=source_parent)
+            os.close(source_parent)
+            source_parent = child
+        source_descriptor = os.open(
+            absolute.name,
+            source_flags,
+            dir_fd=source_parent,
+        )
+        before = os.fstat(source_descriptor)
+        if not stat.S_ISREG(before.st_mode) or before.st_size < 1 or before.st_size > max_bytes:
+            raise ToolError(f"{label.capitalize()} is not one bounded regular file")
+        ensure_owner_only_directory(
+            private_directory,
+            parents=True,
+            label=f"{label} snapshot",
+        )
+        destination_parent = _open_owner_only_directory(
+            private_directory,
+            parents=False,
+            label=f"{label} snapshot",
+        )
+        destination_descriptor = os.open(
+            destination_name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0),
+            0o600,
+            dir_fd=destination_parent,
+        )
+        copied = 0
+        try:
+            while True:
+                chunk = os.read(source_descriptor, 1024 * 1024)
+                if not chunk:
+                    break
+                copied += len(chunk)
+                if copied > max_bytes:
+                    raise ToolError(f"{label.capitalize()} grew beyond the size limit")
+                view = memoryview(chunk)
+                while view:
+                    written = os.write(destination_descriptor, view)
+                    view = view[written:]
+            os.fsync(destination_descriptor)
+        except BaseException:
+            os.close(destination_descriptor)
+            os.unlink(destination_name, dir_fd=destination_parent)
+            raise
+        os.close(destination_descriptor)
+        after = os.fstat(source_descriptor)
+        if (
+            copied != before.st_size
+            or before.st_dev != after.st_dev
+            or before.st_ino != after.st_ino
+            or before.st_size != after.st_size
+            or before.st_mtime_ns != after.st_mtime_ns
+            or before.st_ctime_ns != after.st_ctime_ns
+        ):
+            os.unlink(destination_name, dir_fd=destination_parent)
+            raise ToolError(f"{label.capitalize()} changed while it was being snapshotted")
+        os.fsync(destination_parent)
+        return private_directory / destination_name
+    except OSError as exc:
+        raise ToolError(f"Unable to safely snapshot {label}: {exc.strerror or exc}") from exc
+    finally:
+        if destination_parent is not None:
+            os.close(destination_parent)
+        if source_descriptor is not None:
+            os.close(source_descriptor)
+        os.close(source_parent)
+
+
 def utc_now() -> str:
     """Return a normalized UTC timestamp suitable for generated records."""
 
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def canonical_json(value: Any) -> str:
+    """Serialize a value deterministically."""
+
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def fingerprint(value: Any, *, length: int = 16) -> str:
+    """Return a short deterministic SHA-256 fingerprint."""
+
+    if length < 8 or length > 64:
+        raise ValueError("fingerprint length must be between 8 and 64")
+    return hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()[:length]
 
 
 def is_sensitive_key(value: str) -> bool:
