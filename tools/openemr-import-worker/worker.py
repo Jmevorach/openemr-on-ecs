@@ -912,9 +912,10 @@ def _run_mysql_raw(*extra: str) -> bytes:
 
 
 def _seed_table_fingerprint(database: str, table: str) -> str:
+    # Both identifiers are restricted to the manifest/database allowlist before interpolation.
     column_names = _run_mysql(
         "information_schema",
-        "--execute=SELECT COLUMN_NAME FROM COLUMNS "
+        "--execute=SELECT COLUMN_NAME FROM COLUMNS "  # nosec B608
         f"WHERE TABLE_SCHEMA = '{database}' AND TABLE_NAME = '{table}' "
         "ORDER BY ORDINAL_POSITION",
     ).splitlines()
@@ -952,9 +953,10 @@ def _dump_target_database(output: Path) -> None:
     )
     if any(not os.environ.get(name) for name in required):
         raise ImportFailure("missing-database-configuration")
+    # The database identifier is restricted to ASCII letters, digits, and underscores above.
     stored_code_count = _run_mysql(
         "information_schema",
-        "--execute=SELECT "
+        "--execute=SELECT "  # nosec B608
         f"(SELECT COUNT(*) FROM ROUTINES WHERE ROUTINE_SCHEMA = '{database}') + "
         f"(SELECT COUNT(*) FROM EVENTS WHERE EVENT_SCHEMA = '{database}') + "
         f"(SELECT COUNT(*) FROM TRIGGERS WHERE TRIGGER_SCHEMA = '{database}')",
