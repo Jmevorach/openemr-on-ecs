@@ -45,7 +45,7 @@ compose() {
 own_importer() {
   local path
   for path in "$@"; do
-    docker run --rm --user 0:0 --entrypoint chown \
+    docker run --rm --platform "${IMAGE_PLATFORM}" --user 0:0 --entrypoint chown \
       -v "${path}:${path}" \
       "${IMAGE}" \
       -R 1000:1000 "${path}"
@@ -127,6 +127,7 @@ own_importer "${RAW_SITES}" "${FIXTURES}" "${SITES_MOUNT}"
 
 log "==> Preparing synthetic native-backup fixtures"
 docker run --rm \
+  --platform "${IMAGE_PLATFORM}" \
   --user 1000:1000 \
   --network "${NETWORK}" \
   --entrypoint python \
@@ -156,6 +157,7 @@ own_importer "${FIXTURES}" "${SITES_MOUNT}"
 
 log "==> Running happy-path + rollback + recovery import harness"
 docker run --rm \
+  --platform "${IMAGE_PLATFORM}" \
   --user 1000:1000 \
   --network "${NETWORK}" \
   --entrypoint python \
