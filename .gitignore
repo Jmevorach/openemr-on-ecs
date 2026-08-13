@@ -16,6 +16,7 @@ __pycache__/
 venv/
 ENV/
 env/
+node_modules/
 
 # IDE
 .vscode/
@@ -31,6 +32,9 @@ Thumbs.db
 # Testing
 /tmp/
 *.log
+.coverage
+htmlcov/
+.pytest_cache/
 mysql-ssl-ca/
 
 # Source Code

@@ -83,14 +83,14 @@ Validation Summary
 ✓ All checks passed!
 
 You're ready to deploy. Run:
-  cdk deploy
+  node_modules/.bin/cdk deploy
 ```
 
 ---
 
 ### `stress-test.sh`
 
-**Purpose:** Bash-based stress test for CDK stack synthesis and optionally deployment/destruction with various configurations.
+**Purpose:** Bash-based stress test for CDK stack synthesis with various configurations.
 
 **Usage:**
 
@@ -106,17 +106,11 @@ This tests that the stack can be synthesized (validated) with different configur
 - Full-featured configuration (with Global Accelerator and Analytics)
 - Full-featured with monitoring alarms
 
-**Full Deployment Testing (Slow, Creates/Destroys Resources):**
-```bash
-export DEPLOY_ACTUAL=true
-./scripts/stress-test.sh
-```
-⚠️ **Warning:** This will actually deploy and destroy stacks, taking ~40 minutes per configuration. Only use this if you want to verify actual deployments work correctly.
+The script is deliberately synthesis-only and cannot create or destroy AWS resources.
 
 **What it tests:**
 - Stack synthesis with different feature combinations
 - Monitoring alarms configuration (with/without)
-- (Optional) Actual deployment and destruction cycles
 - Configuration variations with certificate_arn requirement
 
 **Configurations Tested:**
@@ -155,7 +149,6 @@ Test Summary
 =========================================
 ✓ Passed: 6
 ✗ Failed: 0
-⚠ Skipped: 0
 ```
 
 **Note:** For a more comprehensive testing solution with better reporting, see [`test-cdk-synthesis.py`](#test-cdk-synthesispy) below.
@@ -268,9 +261,10 @@ python3 scripts/test-cdk-synthesis.py --fail-fast
 ```
 
 **What it tests:**
-- 8 comprehensive configuration combinations
-- Automatic cdk.json backup and restore
+- 16 comprehensive configuration combinations
+- Command-line context overrides without editing `cdk.json`
 - CDK Nag validation checking
+- `cfn-lint` validation for every synthesized template
 - Colored output for easy reading
 - Detailed error reporting
 
@@ -283,11 +277,20 @@ python3 scripts/test-cdk-synthesis.py --fail-fast
 6. `full-featured-with-monitoring` - Full-featured + monitoring alarms
 7. `api-portal-enabled` - APIs and patient portal enabled
 8. `cloudtrail-enabled` - CloudTrail logging enabled
+9. `ecs-exec-enabled` - ECS Exec enabled
+10. `rds-deletion-protection` - RDS deletion protection enabled
+11. `rds-deletion-protection-override` - Teardown override behavior
+12. `termination-protection` - Stack termination protection enabled
+13. `ipv6-dual-stack` - IPv4 and IPv6 security-group rules
+14. `small-fargate` - Small valid Fargate CPU/memory pair
+15. `large-fargate` - Large valid Fargate CPU/memory pair
+16. `kitchen-sink` - All CI-safe optional features together
 
 **Features:**
-- **Automatic certificate handling**: Temporarily updates `cdk.json` with test certificate ARN
-- **Safe operations**: Always restores original `cdk.json` after testing
+- **Automatic certificate handling**: Passes a dummy certificate ARN only as a synthesis context override
+- **Safe operations**: Never edits configuration or deploys AWS resources
 - **Error detection**: Checks for cdk_nag errors in synthesis output
+- **Template linting**: Runs the pinned `cfn-lint` after every configuration
 - **Color-coded output**: Green for success, red for errors, blue for info
 - **Python-based**: Easy to extend and integrate into Python workflows
 
@@ -297,7 +300,7 @@ python3 scripts/test-cdk-synthesis.py --fail-fast
 CDK Synthesis Test Suite
 ============================================================
 
-Testing 8 configurations...
+Testing 16 configurations...
 
 ------------------------------------------------------------
 [INFO] Testing configuration: minimal
@@ -314,15 +317,15 @@ Testing 8 configurations...
 ============================================================
 Test Summary
 ============================================================
-Passed: 8
+Passed: 16
 Failed: 0
 
 ✓ All tests passed!
 ```
 
 **Requirements:**
-- Python 3.10+
-- AWS CDK CLI installed
+- Python 3.14
+- Pinned local AWS CDK CLI installed with `npm ci`
 - AWS credentials configured (fake credentials work for synthesis)
 - Dependencies from `requirements.txt` installed
 
@@ -331,7 +334,7 @@ Failed: 0
 - `1`: One or more tests failed
 
 **See Also:**
-- [`stress-test.sh`](#stress-testsh) for bash-based testing with deployment options
+- [`stress-test.sh`](#stress-testsh) for the smaller Bash synthesis matrix
 - [.github/workflows/cdk-config-matrix.yml](../.github/workflows/cdk-config-matrix.yml) for CI/CD integration
 
 ---
@@ -401,7 +404,7 @@ Failed: 0
 Waiting for stacks to be deleted (this may take 10-20 minutes)...
 ```
 
-**Note**: 
+**Note**:
 - Stack deletion can take 10-20 minutes. The script initiates deletion but doesn't wait for completion.
 - Monitor progress in the AWS Console or with:
   ```bash
@@ -753,4 +756,3 @@ chmod +x scripts/script-name.sh
 **Permission denied:**
 - Make sure the script has execute permissions: `chmod +x scripts/script-name.sh`
 - On some systems, you may need to use `bash scripts/script-name.sh` instead
-

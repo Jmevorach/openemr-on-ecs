@@ -69,11 +69,11 @@ AND DISCLAIMERS APPLY EXCEPT TO THE EXTENT PROHIBITED BY APPLICABLE LAW.
 
 ### General
 
-AWS does not represent or warrant that this AWS Content is production ready.  You are responsible for making your own independent assessment of the information, guidance, code and other AWS Content provided by AWS, which may include you performing your own independent testing, securing, and optimizing. You should take independent measures to ensure that you comply with your own specific quality control practices and standards, and to ensure that you comply with the local rules, laws, regulations, licenses and terms that apply to you and your content.  If you are in a regulated industry, you should take extra care to ensure that your use of this AWS Content, in combination with your own content, complies with applicable regulations (for example, the Health Insurance Portability and Accountability Act of 1996).   AWS does not make any representations, warranties or guarantees that this AWS Content will result in a particular outcome or result. 
+AWS does not represent or warrant that this AWS Content is production ready.  You are responsible for making your own independent assessment of the information, guidance, code and other AWS Content provided by AWS, which may include you performing your own independent testing, securing, and optimizing. You should take independent measures to ensure that you comply with your own specific quality control practices and standards, and to ensure that you comply with the local rules, laws, regulations, licenses and terms that apply to you and your content.  If you are in a regulated industry, you should take extra care to ensure that your use of this AWS Content, in combination with your own content, complies with applicable regulations (for example, the Health Insurance Portability and Accountability Act of 1996).   AWS does not make any representations, warranties or guarantees that this AWS Content will result in a particular outcome or result.
 
 # Instructions
 
-These setup instructions assume that you've setup an AWS account and configured the AWS CDK. If you haven't done that we'd advise looking at [this documentation for setting up an AWS account](https://docs.aws.amazon.com/SetUp/latest/UserGuide/setup-overview.html) and [this documentation for setting up the AWS CDK](https://docs.aws.amazon.com/cdk/v2/guide/getting_started.html) before reviewing the instructions below. 
+These setup instructions assume that you've setup an AWS account and configured the AWS CDK. If you haven't done that we'd advise looking at [this documentation for setting up an AWS account](https://docs.aws.amazon.com/SetUp/latest/UserGuide/setup-overview.html) and [this documentation for setting up the AWS CDK](https://docs.aws.amazon.com/cdk/v2/guide/getting_started.html) before reviewing the instructions below.
 
 ### 1. Installing dependencies
 
@@ -107,6 +107,7 @@ Once the virtualenv is activated, you can install the required dependencies.
 
 ```
 $ pip install -r requirements.txt
+$ npm ci
 ```
 
 Create ECS Service accounts.
@@ -119,18 +120,18 @@ $ aws iam create-service-linked-role --aws-service-name ecs.application-autoscal
 At this point you can now synthesize the CloudFormation template for this code.
 
 ```
-$ cdk synth
+$ node_modules/.bin/cdk synth
 ```
 
 You can also deploy using CDK as well.
 
 ```
-$ cdk deploy
+$ node_modules/.bin/cdk deploy
 ```
 
-To add additional dependencies, for example other CDK libraries, just add
-them to your `setup.py` file and rerun the `pip install -r requirements.txt`
-command.
+Add Python dependencies to the appropriate requirements file and Node/CDK
+tools through `package.json`; then regenerate and commit the corresponding
+lockfile where applicable.
 
 ### 2. IP Range Access
 
@@ -242,7 +243,7 @@ On a Mac the steps to reproduce would be:
 - `brew install siege`
 - `watch -n0 siege -c 255 $ALB_URL -t60m`
 
-CPU and memory utilization did increase while stress testing occurred but average utilization peaked at 18.6% for CPU utilization and 30.4% for memory utilization. The architecture did not need to use ECS autoscaling to provision additional Fargate containers to handle the load and thus our base cost for Fargate did not increase beyond the base cost of $0.079/hour during testing. The load balancer was comfortably serving more than 4000 requests/second and the active connection count peaked above 1300. The response time for all requests never exceeded 0.8s. Additionally RDS and Elasticache also performed well with ACU utilization and average read and write request latency remaining low. 
+CPU and memory utilization did increase while stress testing occurred but average utilization peaked at 18.6% for CPU utilization and 30.4% for memory utilization. The architecture did not need to use ECS autoscaling to provision additional Fargate containers to handle the load and thus our base cost for Fargate did not increase beyond the base cost of $0.079/hour during testing. The load balancer was comfortably serving more than 4000 requests/second and the active connection count peaked above 1300. The response time for all requests never exceeded 0.8s. Additionally RDS and Elasticache also performed well with ACU utilization and average read and write request latency remaining low.
 
 We did not notice any change in the responsiveness of the UI while testing occurred. Detailed tables for metrics can be found below.
 
@@ -325,10 +326,10 @@ Welcome to Sagemaker Studio! If you navigate to the `"Data"` section of the menu
 
 It's easiest to work with data in Sagemaker Studio when it's in an S3 bucket so there's two automated pipelines you can leverage to get data securely from OpenEMR into two S3 buckets accessible from Sagemaker Studio.
 
-You can export all of the files stored by the EMR to an S3 bucket you can read and write to from Sagemaker Studio. When the analytics environment is created there's a lambda made with the logical ID "EFStoS3ExportLambda" which when invoked will trigger a sync between the EFS and S3 with the logical ID "EFSExportBucket" and return an ECS task ID you can poll to monitor the state of the transfer. Your Sagemaker Studio profile has permissions to invoke the lambda, to describe the ECS task ID returned from the lambda and to read and write to/from the destination s3 bucket. 
+You can export all of the files stored by the EMR to an S3 bucket you can read and write to from Sagemaker Studio. When the analytics environment is created there's a lambda made with the logical ID "EFStoS3ExportLambda" which when invoked will trigger a sync between the EFS and S3 with the logical ID "EFSExportBucket" and return an ECS task ID you can poll to monitor the state of the transfer. Your Sagemaker Studio profile has permissions to invoke the lambda, to describe the ECS task ID returned from the lambda and to read and write to/from the destination s3 bucket.
 ![alt text](./docs/images/efs_to_s3_export.png)
 
-You can export all of the contents of OpenEMR's RDS Aurora Serverless v2 MySQL database to an S3 bucket you can read and write to from Sagemaker Studio. When the analytics environment is created there's a lambda made with the logical ID "RDStoS3ExportLambda" which when invoked will trigger a sync between the RDS and S3 with the logical ID "S3ExportBucket" and return a response object for the `"start_export_task"` API call which can be parsed to find (amongst other potentially useful information) an RDS export task you can poll to monitor the state of the transfer. Your Sagemaker Studio profile has permissions to invoke the lambda, to describe the RDS export task ID returned from the lambda and to read and write to/from the destination s3 bucket. 
+You can export all of the contents of OpenEMR's RDS Aurora Serverless v2 MySQL database to an S3 bucket you can read and write to from Sagemaker Studio. When the analytics environment is created there's a lambda made with the logical ID "RDStoS3ExportLambda" which when invoked will trigger a sync between the RDS and S3 with the logical ID "S3ExportBucket" and return a response object for the `"start_export_task"` API call which can be parsed to find (amongst other potentially useful information) an RDS export task you can poll to monitor the state of the transfer. Your Sagemaker Studio profile has permissions to invoke the lambda, to describe the RDS export task ID returned from the lambda and to read and write to/from the destination s3 bucket.
 ![alt text](./docs/images/rds_to_s3_export.png)
 
 Both transfer jobs are idempotent and can be run while the system is live with no downtime. The whole environment costs no money unless you choose to provision and use compute resources in it; for as long as it sits idle you will incur zero costs. If you do choose to use it you can find SageMaker pricing documentation [here](https://aws.amazon.com/sagemaker/pricing/?p=pm&c=sm&z=2).
@@ -438,7 +439,7 @@ If you'd like to rotate the SMTP credentials you can:
 3. Update the OpenEMR ECS Service.
 4. Using the OpenEMR admin user save the new notification configuration with the updated SMTP password.
 
-Using these services will incur extra costs. See here for pricing information on [route53](https://aws.amazon.com/route53/pricing/), [AWS Certificate Manager](https://aws.amazon.com/certificate-manager/pricing/), and [AWS SES](https://aws.amazon.com/ses/pricing/). 
+Using these services will incur extra costs. See here for pricing information on [route53](https://aws.amazon.com/route53/pricing/), [AWS Certificate Manager](https://aws.amazon.com/certificate-manager/pricing/), and [AWS SES](https://aws.amazon.com/ses/pricing/).
 
 # Enabling HTTPS for Client to Load Balancer Communication
 
@@ -530,9 +531,9 @@ aws ecs execute-command --cluster $name_of_ecs_cluster \
 
 Turning on ECS Exec allows you to grant secure access to the MySQL database using [AWS Systems Manager](https://docs.aws.amazon.com/toolkit-for-vscode/latest/userguide/systems-manager-automation-docs.html).
 
-The `scripts/port_forward_to_rds.sh` file can be used on any machine that can run bash to port forward your own port 3306 (default MySQL port) to port 3306 on the Fargate hosts running OpenEMR. 
+The `scripts/port_forward_to_rds.sh` file can be used on any machine that can run bash to port forward your own port 3306 (default MySQL port) to port 3306 on the Fargate hosts running OpenEMR.
 
-This allows you to access the database securely from anywhere on Earth with an internet connection. This allows you to do something like download [MySQL Workbench](https://dev.mysql.com/downloads/workbench/) or your other preferred free GUI MySQL management tool and start managing the database and creating users. Once you have access to the database the sky's the limit; you could also run complex queries or use your whole EHR database for [RAG powered LLM queries](https://python.langchain.com/docs/tutorials/sql_qa/).  
+This allows you to access the database securely from anywhere on Earth with an internet connection. This allows you to do something like download [MySQL Workbench](https://dev.mysql.com/downloads/workbench/) or your other preferred free GUI MySQL management tool and start managing the database and creating users. Once you have access to the database the sky's the limit; you could also run complex queries or use your whole EHR database for [RAG powered LLM queries](https://python.langchain.com/docs/tutorials/sql_qa/).
 
 We'll now review some steps you can use to get started doing this.
 
@@ -544,10 +545,10 @@ We'll now review some steps you can use to get started doing this.
 6. You can now use the autogenerated database admin credentials stored in DBsecret to log in access the MySQL database as the admin: <br /> ![alt text](./docs/images/accessing_db_secret.png) <br />
 7. Click the "Retrieve Secret Value" button to reveal the admin database credentials: <br /> ![alt text](./docs/images/retrieve_secret_value.png) <br />
 8. Use the username and password to access the MySQL database as the admin user: <br /> ![alt text](./docs/images/username_and_password.png) <br />
-9. You can now securely access the OpenEMR database from anywhere on Earth! Here's a screenshot of me accessing the Database from my laptop using MySQL Workbench and then remotely creating a MySQL function that allows me to call the [Claude 3 Sonnet Foundation Model](https://aws.amazon.com/about-aws/whats-new/2024/03/anthropics-claude-3-sonnet-model-amazon-bedrock/) using the [AWS Bedrock service](https://aws.amazon.com/bedrock) from within MySQL: <br /> ![alt text](./docs/images/accessing_the_database_remotely.png) <br /> 
+9. You can now securely access the OpenEMR database from anywhere on Earth! Here's a screenshot of me accessing the Database from my laptop using MySQL Workbench and then remotely creating a MySQL function that allows me to call the [Claude 3 Sonnet Foundation Model](https://aws.amazon.com/about-aws/whats-new/2024/03/anthropics-claude-3-sonnet-model-amazon-bedrock/) using the [AWS Bedrock service](https://aws.amazon.com/bedrock) from within MySQL: <br /> ![alt text](./docs/images/accessing_the_database_remotely.png) <br />
 
 Some Notes on Providing Secure Database Access:
-- SSL is [automatically enforced](https://aws.amazon.com/about-aws/whats-new/2022/08/amazon-rds-mysql-supports-ssl-tls-connections/) for all connections to the database. The SSL materials required for accessing the database can be downloaded for free [here](https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem). 
+- SSL is [automatically enforced](https://aws.amazon.com/about-aws/whats-new/2022/08/amazon-rds-mysql-supports-ssl-tls-connections/) for all connections to the database. The SSL materials required for accessing the database can be downloaded for free [here](https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem).
 - Toggling ECS Exec off will block anyone, anywhere from accessing the database like this.
 - You can log in using the admin user but in general when granting access to the database you should use the admin user to make another MySQL user with the appropriate levels of permissions.
 - To be able to port forward you'll need the appropriate IAM permissions to do start an SSM session on the Fargate nodes.
@@ -565,13 +566,13 @@ Setting this to "true" will enable the RDS Data API for our database. Here's a s
 
 Because we use Aurora Serverless v2 in our architecture you're able to make unlimited requests per second to the RDS Data API. More information on the RDS Data API for Aurora Serverless v2 can be found [here](https://aws.amazon.com/blogs/database/introducing-the-data-api-for-amazon-aurora-serverless-v2-and-amazon-aurora-provisioned-clusters/).
 
-There's a script named "test_data_api.py" found in the "scripts" folder that will allow you to test the RDS Data API. On line 8 specify the Amazon Resource Name (ARN) of your RDS database cluster and on line 9 specify the ARN of the Secrets Manager database secret. Then you can execute an SQL statement of your choosing that you specify on line 13. The region on line 5 is set to "us-east-1" but if you deployed your architecture to a different AWS region then make sure to specify that region instead.  
+There's a script named "test_data_api.py" found in the "scripts" folder that will allow you to test the RDS Data API. On line 8 specify the Amazon Resource Name (ARN) of your RDS database cluster and on line 9 specify the ARN of the Secrets Manager database secret. Then you can execute an SQL statement of your choosing that you specify on line 13. The region on line 5 is set to "us-east-1" but if you deployed your architecture to a different AWS region then make sure to specify that region instead.
 
 Note that using this functionality will incur extra costs. Information on pricing for the RDS Data API can be found [here](https://aws.amazon.com/rds/aurora/pricing/?refid=d0d2d16d-a4b1-420d-b102-bf8ef4afa0c9#Data_API_costs).
 
 # Aurora ML for AWS Bedrock
 
-Note: Not all integrations are enabled for all versions of the Aurora MySQL engine at all times. New engine versions often don't ship with features like the Bedrock integration enabled but instead have them enabled later. We try to keep the MySQL engine set by default to one of the more recent versions of the engine. If you want to enable this feature you may need to change the MySQL engine version to a previous version. If you need to do this change the `"self.aurora_mysql_engine_version"` variable in [openemr_ecs_stack.py](https://github.com/openemr/host-openemr-on-aws-fargate/blob/main/openemr_ecs/openemr_ecs_stack.py). 
+Note: Not all integrations are enabled for all versions of the Aurora MySQL engine at all times. New engine versions often don't ship with features like the Bedrock integration enabled but instead have them enabled later. We try to keep the MySQL engine set by default to one of the more recent versions of the engine. If you want to enable this feature you may need to change the MySQL engine version to a previous version. If you need to do this change the `"self.aurora_mysql_engine_version"` variable in [openemr_ecs_stack.py](https://github.com/openemr/host-openemr-on-aws-fargate/blob/main/openemr_ecs/openemr_ecs_stack.py).
 
 You can toggle on and off the [Aurora ML for AWS Bedrock Integration](https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/mysql-ml.html#using-amazon-bedrock) by setting the "enable_bedrock_integration" parameter in the "cdk.json" file.
 
@@ -604,11 +605,11 @@ To use the APIs you'll need to have HTTPS enabled (which is required for all dep
 Also ensure that `activate_openemr_apis` is set to `"true"`.
 
 1. Wait for the `cdk deploy` command to finish and for the stack to build. Then obtain the value for the DNS name of our ALB from either the Cloudformation console <br /> ![alt text](./docs/images/ConsoleOutputALBDNS.png) <br /> or the terminal you ran `cdk deploy` in <br /> ![alt text](./docs/images/TerminalOutputALBDNS.png)
-2. Change directory to the `"scripts"` folder in this repository and run the "api_endpoint_test.py" script using the value obtained in part 1. That should look something like this <br /> ![alt text](./docs/images/RunningPythonScript.png) <br /> and yield an output that looks like this <br /> ![alt text](./docs/images/1stOutputFromScript.png) <br /> at the bottom of the output you should see a message instructing you to "Enable the client with the above ID". 
+2. Change directory to the `"scripts"` folder in this repository and run the "api_endpoint_test.py" script using the value obtained in part 1. That should look something like this <br /> ![alt text](./docs/images/RunningPythonScript.png) <br /> and yield an output that looks like this <br /> ![alt text](./docs/images/1stOutputFromScript.png) <br /> at the bottom of the output you should see a message instructing you to "Enable the client with the above ID".
 3. To "Enable the client with the above ID" first copy the value in green below <br /> ![alt text](./docs/images/OutputFromScriptClientID.png) <br /> then log in to OpenEMR and navigate to the API Clients menu as shown below <br /> ![alt text](./docs/images/APIClientsMenu.png) <br /> then in the menu find the registration where the Client ID corresponds with the value noted above <br /> ![alt text](./docs/images/FindingCorrectClientID.png) <br /> and then click on the "edit" button next to that registration and in the following menu click the "Enable Client" button <br /> ![alt text](./docs/images/EnableClientButton.png) <br /> and if all goes well the client registration should now reflect that it is enabled like so <br /> ![alt text](./docs/images/ClientEnabled.png).
-4. Now that we've enabled our client let's go back to our script that's still running in our terminal and press enter to continue. We should get an output like this <br /> ![alt text](./docs/images/2ndOutputFromScript.png) <br /> and our script has generated a URL we should go to to authorize our application. 
+4. Now that we've enabled our client let's go back to our script that's still running in our terminal and press enter to continue. We should get an output like this <br /> ![alt text](./docs/images/2ndOutputFromScript.png) <br /> and our script has generated a URL we should go to to authorize our application.
 5. Before we navigate to that URL let's make a patient (in the event we didn't already have testing patient data imported) by going to the following menu <br /> ![alt text](./docs/images/AddNewPatient.png) <br /> and adding a fake patient for testing purposes with data and clicking the `"Create New Patient"` button like so <br /> ![alt text](./docs/images/CreateNewPatient.png)
-6. Now let's navigate to the URL obtained in part 4 in our webbrowser where we should be prompted to login and should look like this <br /> ![alt text](./docs/images/LoginPrompt.png). <br /> Log in with the admin user and password stored in secrets manager. 
+6. Now let's navigate to the URL obtained in part 4 in our webbrowser where we should be prompted to login and should look like this <br /> ![alt text](./docs/images/LoginPrompt.png). <br /> Log in with the admin user and password stored in secrets manager.
 7. Keep in mind that the next three steps are time sensitive. We're going to obtain a code in steps 8 and 9 that is short lived and needs to be used relatively quickly to get back an access token which can then be used to make API calls over an extended period of time. I'd recommend reading ahead for steps 8-10 so that you can step through them reasonably fast.
 8. Then let's select our testing user <br /> ![alt text](./docs/images/SelectPatient.png) <br /> which should bring us to a screen that looks like this <br /> ![alt text](./docs/images/TopOfAuthorizationPage.png) <br /> and then scroll to the bottom of the page and click `"authorize"` <br /> ![alt text](./docs/images/ClickAuthorize.png)
 9. Now in our example you're going to get a `"403 Forbidden"` page. That's totally fine! Notice the URL we were redirected to and copy everything after `?code=` up until `&state=` to your clipboard <br /> ![alt text](./docs/images/403Forbidden.png) <br /> At this stage in the process you've registered an API client, enabled it in the console, authorized and gotten a code which we've copied to our clipboard.
@@ -622,7 +623,7 @@ Here's a short description of what AWS Global Accelerator does from ChatGPT: "AW
 
 In my testing I was pleasantly surprised by how much performance was improved. If you're setting up an installation that will be used by global users or will require high speed uploads and downloads or be used by many users consider turning this on.
 
-When enabled the URL of the global accelerator endpoint will be available as a Cloudformation output named "GlobalAcceleratorUrl" and will be printed in the terminal by CDK when the deployment completes. Route traffic to that URL rather than the URL of the ALB to experience the benefits of using AWS Global Accelerator.  
+When enabled the URL of the global accelerator endpoint will be available as a Cloudformation output named "GlobalAcceleratorUrl" and will be printed in the terminal by CDK when the deployment completes. Route traffic to that URL rather than the URL of the ALB to experience the benefits of using AWS Global Accelerator.
 
 Note that using this functionality will incur extra costs. Information on pricing for AWS Global Accelerator can be found [here](https://aws.amazon.com/global-accelerator/pricing/).
 
@@ -642,7 +643,7 @@ cdk.Validations.of(app).add_plugins(
 )
 ```
 
-Findings that are expected (and safe) for this architecture are acknowledged in code via the `acknowledge_findings()` helper in `openemr_ecs/nag_suppressions.py`, with the rationale for each documented in [docs/cdk-nag-suppressions.md](docs/cdk-nag-suppressions.md). Any new finding surfaced by `cdk synth` will need to be addressed or acknowledged before deployment. While this may assist with complying with certain aspects of HIPAA we make no claims that this alone will result in compliance with HIPAA. Please see the general disclaimer at the top of this README for more information. 
+Findings that are expected (and safe) for this architecture are acknowledged in code via the `acknowledge_findings()` helper in `openemr_ecs/nag_suppressions.py`, with the rationale for each documented in [docs/cdk-nag-suppressions.md](docs/cdk-nag-suppressions.md). Any new finding surfaced by `cdk synth` will need to be addressed or acknowledged before deployment. While this may assist with complying with certain aspects of HIPAA we make no claims that this alone will result in compliance with HIPAA. Please see the general disclaimer at the top of this README for more information.
 
 ### Container Vulnerabilities
 
@@ -670,9 +671,8 @@ We recommend periodically scanning the container image used in this project. The
 
 # Useful commands
 
- * `cdk ls`          list all stacks in the app
- * `cdk synth`       emits the synthesized CloudFormation template
- * `cdk deploy`      deploy this stack to your default AWS account/region
- * `cdk diff`        compare deployed stack with current state
- * `cdk docs`        open CDK documentation
-
+ * `node_modules/.bin/cdk ls`          list all stacks in the app
+ * `node_modules/.bin/cdk synth`       emits the synthesized CloudFormation template
+ * `node_modules/.bin/cdk deploy`      deploy this stack to your default AWS account/region
+ * `node_modules/.bin/cdk diff`        compare deployed stack with current state
+ * `node_modules/.bin/cdk docs`        open CDK documentation

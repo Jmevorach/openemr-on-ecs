@@ -14,6 +14,7 @@ from aws_cdk import aws_secretsmanager as secretsmanager
 from aws_cdk import aws_ssm as ssm
 from constructs import Construct
 
+from .kms_keys import KmsKeys
 from .nag_suppressions import acknowledge_findings, suppress_vpc_endpoint_security_group_findings
 from .utils import get_resource_suffix, is_true, serverless_cache_name
 
@@ -29,13 +30,14 @@ class DatabaseComponents:
     - Optional Bedrock integration for ML
     """
 
-    def __init__(self, scope: Construct):
+    def __init__(self, scope: Construct, kms_keys: KmsKeys):
         """Initialize database components.
 
         Args:
             scope: The CDK construct scope
         """
         self.scope = scope
+        self.kms_keys = kms_keys
         self.db_instance: Optional[rds.DatabaseCluster] = None
         self.valkey_cluster: Optional[elasticache.CfnServerlessCache] = None
         self.db_secret: Optional[secretsmanager.Secret] = None
@@ -68,7 +70,7 @@ class DatabaseComponents:
             The created database cluster
         """
         # Create database secret with KMS encryption
-        kms_key = self.scope.kms_keys.central_key
+        kms_key = self.kms_keys.central_key
 
         self.db_secret = secretsmanager.Secret(
             self.scope,
@@ -427,7 +429,7 @@ class DatabaseComponents:
         if not self.db_instance:
             raise ValueError("Database cluster must be created before slot secrets")
 
-        kms_key = self.scope.kms_keys.central_key
+        kms_key = self.kms_keys.central_key
 
         self.rds_slot_secret = secretsmanager.Secret(
             self.scope,

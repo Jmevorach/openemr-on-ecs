@@ -15,6 +15,7 @@ from aws_cdk import aws_iam as iam
 from aws_cdk import aws_logs as logs
 from constructs import Construct
 
+from .kms_keys import KmsKeys
 from .nag_suppressions import acknowledge_findings
 from .utils import is_true
 
@@ -30,7 +31,7 @@ class NetworkComponents:
     - VPC Flow Logs
     """
 
-    def __init__(self, scope: Construct, vpc_cidr: str):
+    def __init__(self, scope: Construct, vpc_cidr: str, kms_keys: KmsKeys):
         """Initialize network components.
 
         Args:
@@ -38,6 +39,7 @@ class NetworkComponents:
             vpc_cidr: CIDR block for the VPC (e.g., "10.0.0.0/16")
         """
         self.scope = scope
+        self.kms_keys = kms_keys
         self.vpc_cidr = vpc_cidr
         self.vpc: Optional[ec2.Vpc] = None
         self.db_sec_group: Optional[ec2.SecurityGroup] = None
@@ -58,7 +60,7 @@ class NetworkComponents:
         )
 
         # Get KMS key for encryption
-        kms_key = self.scope.kms_keys.central_key
+        kms_key = self.kms_keys.central_key
 
         vpc_log_group = logs.LogGroup(
             self.scope,

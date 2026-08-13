@@ -20,6 +20,7 @@ from aws_cdk import aws_secretsmanager as secretsmanager
 from constructs import Construct
 
 from .constants import StackConstants
+from .kms_keys import KmsKeys
 from .nag_suppressions import acknowledge_findings
 from .utils import get_resource_suffix, is_true
 
@@ -36,13 +37,14 @@ class ComputeComponents:
     - SSL/TLS certificate setup in containers
     """
 
-    def __init__(self, scope: Construct):
+    def __init__(self, scope: Construct, kms_keys: KmsKeys):
         """Initialize compute components.
 
         Args:
             scope: The CDK construct scope
         """
         self.scope = scope
+        self.kms_keys = kms_keys
         self.ecs_cluster: Optional[ecs.Cluster] = None
         self.log_group: Optional[logs.LogGroup] = None
         self.kms_key: Optional[kms.Key] = None
@@ -145,7 +147,7 @@ class ComputeComponents:
         self.ecs_cluster.node.add_dependency(db_instance)
 
         # Create log group for container logging with KMS encryption
-        kms_key = self.scope.kms_keys.central_key
+        kms_key = self.kms_keys.central_key
         self.log_group = logs.LogGroup(
             self.scope,
             "log-group",
@@ -759,8 +761,11 @@ class ComputeComponents:
         )
 
         # Suppress inline policy warnings for execution and task roles (after container creates DefaultPolicies)
+        execution_role = openemr_fargate_task_definition.execution_role
+        if execution_role is None:
+            raise RuntimeError("OpenEMR task definition requires an execution role")
         acknowledge_findings(
-            openemr_fargate_task_definition.execution_role.node.find_child("DefaultPolicy").node.find_child("Resource"),
+            execution_role.node.find_child("DefaultPolicy").node.find_child("Resource"),
             [
                 {
                     "id": "HIPAA.Security-IAMNoInlinePolicy",
@@ -844,7 +849,9 @@ class ComputeComponents:
         # This allows better recovery if an availability zone goes down
         # Documentation: https://docs.aws.amazon.com/AmazonECS/latest/developerguide/service-rebalancing.html
         openemr_service_cfn = openemr_service.service.node.default_child
-        openemr_service_cfn.add_property_override("AvailabilityZoneRebalancing", "ENABLED")  # type: ignore
+        if not isinstance(openemr_service_cfn, ecs.CfnService):
+            raise RuntimeError("OpenEMR service is missing its CloudFormation resource")
+        openemr_service_cfn.add_property_override("AvailabilityZoneRebalancing", "ENABLED")
 
         # Fail fast on bad deployments: automatically rollback if a deployment can't stabilize.
         # Note: Some CDK versions do not expose a typed helper on the service construct, so we
@@ -997,7 +1004,7 @@ class ComputeComponents:
             )
         )
 
-        rotation_task_definition.task_role.add_to_policy(
+        rotation_task_definition.task_role.add_to_principal_policy(
             iam.PolicyStatement(
                 actions=[
                     "secretsmanager:GetSecretValue",
@@ -1008,7 +1015,7 @@ class ComputeComponents:
                 resources=[rds_slot_secret.secret_arn, db_secret.secret_arn],
             )
         )
-        rotation_task_definition.task_role.add_to_policy(
+        rotation_task_definition.task_role.add_to_principal_policy(
             iam.PolicyStatement(
                 actions=["ecs:UpdateService", "ecs:DescribeServices"],
                 resources=["*"],
@@ -1016,7 +1023,7 @@ class ComputeComponents:
         )
 
         # KMS decrypt + encrypt required: decrypt for GetSecretValue, GenerateDataKey for PutSecretValue.
-        self.scope.kms_keys.central_key.grant_encrypt_decrypt(rotation_task_definition.task_role)
+        self.kms_keys.central_key.grant_encrypt_decrypt(rotation_task_definition.task_role)
 
         # Apply suppressions for least-privilege ECS task execution policies.
         acknowledge_findings(
@@ -1046,8 +1053,11 @@ class ComputeComponents:
                 }
             ],
         )
+        rotation_execution_role = rotation_task_definition.execution_role
+        if rotation_execution_role is None:
+            raise RuntimeError("Credential rotation task requires an execution role")
         acknowledge_findings(
-            rotation_task_definition.execution_role,
+            rotation_execution_role,
             [
                 {
                     "id": "AwsSolutions-IAM5",

@@ -303,6 +303,7 @@ class RotationOrchestrator:
         host = admin.get("host", "")
         port = int(admin.get("port", 3306))
 
+        last_error: BaseException | None = None
         try:
             pymysql.connect(
                 host=host,
@@ -312,10 +313,10 @@ class RotationOrchestrator:
                 connect_timeout=5,
                 ssl={"ssl": {}},
             ).close()
-        except pymysql.OperationalError:
-            pass
-        else:
             return admin
+        except pymysql.OperationalError as exc:
+            # Admin secret password rejected; try dual-slot fallbacks below.
+            last_error = exc
 
         rds_state = self.secrets.get_secret(self.ctx.rds_slots_secret_id)
         for slot_name in ("A", "B"):
@@ -330,15 +331,22 @@ class RotationOrchestrator:
                         connect_timeout=5,
                         ssl={"ssl": {}},
                     ).close()
-                except pymysql.OperationalError:
+                except pymysql.OperationalError as exc:
+                    last_error = exc
                     continue
                 admin["password"] = slot["password"]
                 self.secrets.put_payload(self.ctx.rds_admin_secret_id, admin)
                 return admin
 
+        detail = (
+            f"{type(last_error).__name__}: {last_error}"
+            if last_error is not None
+            else "no connection attempts recorded"
+        )
         raise RuntimeError(
             "Admin credentials in DbSecretArn are invalid and no fallback "
-            "password was found. Reset the RDS master password manually."
+            f"password was found ({detail}). "
+            "Reset the RDS master password manually."
         )
 
     def _upsert_openemr_db_user(self, slot: Dict[str, Any]) -> None:

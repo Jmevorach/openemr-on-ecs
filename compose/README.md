@@ -223,5 +223,4 @@ Key components:
 - These configurations are for **testing only**, not production use
 - SSL certificates in test-ssl.yml are self-signed and should not be used in production
 - Test data is ephemeral and will be lost when containers are stopped
-- For production deployment, use `cdk deploy` to create AWS infrastructure
-
+- For production deployment, use `node_modules/.bin/cdk deploy` to create AWS infrastructure

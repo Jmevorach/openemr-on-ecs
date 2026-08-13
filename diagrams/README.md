@@ -18,7 +18,7 @@ This directory contains the **diagram-as-code** source for the project's archite
 ```bash
 # One-time setup
 brew install graphviz         # macOS (or: sudo apt-get install graphviz)
-npm install --location=global cdk-dia
+npm ci
 
 # Generate the diagrams (run from project root, with the project's
 # virtualenv activated -- no separate virtualenv needed)
@@ -34,10 +34,10 @@ This produces `diagrams/architecture.png` (compact view) and `diagrams/architect
 
 | Dependency | Version | Install | Purpose |
 |---|---|---|---|
-| **Node.js / npm** | Any recent | Already required for the `cdk` CLI | Runs cdk-dia |
-| **cdk-dia** | Latest | `npm install --location=global cdk-dia` | Renders the CDK cloud assembly into a diagram |
+| **Node.js / npm** | 24 | Already required by the project | Runs the pinned Node tools |
+| **cdk-dia** | 0.12.3 | Installed by `npm ci` | Renders the CDK cloud assembly into a diagram |
 | **Graphviz** | Any recent | `brew install graphviz` (macOS) / `sudo apt-get install graphviz` (Linux) | Rendering engine (`dot`) |
-| **Python** | 3.9+ | Already required by the CDK stack | Runs `generate.py` and `cdk synth` |
+| **Python** | 3.14 | Already required by the CDK stack | Runs `generate.py` and `cdk synth` |
 
 Graphviz provides the `dot` layout engine that converts the graph into a PNG. cdk-dia reads the CDK construct tree (`tree.json`) produced by `cdk synth` and renders it.
 
@@ -51,10 +51,10 @@ python diagrams/generate.py
 
 The script:
 
-1. Temporarily backs up `cdk.json` / `cdk.context.json` and swaps in dummy, synth-only values (a placeholder ACM certificate ARN, a fixed IP range, and cached availability zones) so `cdk synth` succeeds without real AWS credentials.
-2. Runs `cdk synth --no-lookups` to build the construct tree.
-3. Runs `npx cdk-dia` twice against the resulting `tree.json` -- once with `--collapse` (compact view) and once with `--no-collapse` (full view).
-4. Restores the original `cdk.json` / `cdk.context.json` and cleans up build artifacts.
+1. Passes dummy, synth-only context values without modifying `cdk.json` or `cdk.context.json`.
+2. Runs the repository-pinned CDK CLI with `--no-lookups` to build the construct tree.
+3. Runs the repository-pinned cdk-dia twice against the resulting `tree.json` -- once with `--collapse` (compact view) and once with `--no-collapse` (full view).
+4. Cleans up the temporary cloud assembly.
 
 Output:
 
@@ -123,10 +123,9 @@ Diagram generation is a development-time concern. Keeping it in a standalone scr
 | Problem | Solution |
 |---|---|
 | `command not found: dot` | Install Graphviz: `brew install graphviz` (macOS) or `sudo apt-get install graphviz` (Linux) |
-| `command not found: cdk` | Install the CDK CLI: `npm install --location=global aws-cdk@2` |
-| `npx cdk-dia` fails to resolve the package | Install it globally instead: `npm install --location=global cdk-dia` |
+| Pinned `cdk` or `cdk-dia` is missing | Run `npm ci` from the project root |
 | `ModuleNotFoundError: No module named 'openemr_ecs'` | Run from the **project root** with the project virtualenv activated: `python diagrams/generate.py` |
-| `cdk synth` errors about missing context | The script seeds dummy account/region/AZ context automatically. If you interrupt the script mid-run, restore `cdk.json`/`cdk.context.json` from the `.diagrams-backup` files it creates. |
+| `cdk synth` errors about missing context | Confirm the pinned dependencies are installed; the script passes its dummy account, Region, certificate, and CIDR only as command-line context |
 | Diagram looks too cluttered | Use the compact (`--collapse`, default) output; the full (`--no-collapse`) diagram is intentionally dense for auditing |
 
 ## References
