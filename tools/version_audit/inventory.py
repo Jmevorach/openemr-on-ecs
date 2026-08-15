@@ -9,7 +9,7 @@ import re
 from collections import defaultdict
 from functools import lru_cache
 from pathlib import Path
-from typing import Iterable, Iterator
+from typing import Callable, Iterable, Iterator
 
 from packaging.requirements import InvalidRequirement, Requirement
 from packaging.utils import canonicalize_name
@@ -39,6 +39,94 @@ _SKIP_DIRECTORIES = {
     "node_modules",
     "tmp",
 }
+
+
+class InventorySource:
+    """Optional closed set of repository files and its policy-enforcing reader."""
+
+    def __init__(
+        self,
+        root: Path,
+        *,
+        paths: Iterable[str] | None = None,
+        reader: Callable[[str], str] | None = None,
+    ):
+        self.root = root.resolve()
+        if (paths is None) != (reader is None):
+            raise ValueError("paths and reader must be provided together")
+        selected: list[str] | None = None
+        if paths is not None:
+            selected = []
+            for value in paths:
+                relative = Path(value)
+                if relative.is_absolute() or ".." in relative.parts or not relative.parts:
+                    raise ToolError("Inventory source paths must be repository-relative")
+                selected.append(relative.as_posix())
+        self._selected = tuple(sorted(set(selected))) if selected is not None else None
+        self._selected_set = set(self._selected or ())
+        self._reader = reader
+
+    @property
+    def restricted(self) -> bool:
+        """Return whether enumeration is limited to an explicit path set."""
+
+        return self._selected is not None
+
+    def _relative(self, path: Path) -> str:
+        candidate = path if path.is_absolute() else self.root / path
+        try:
+            relative = candidate.relative_to(self.root)
+        except ValueError as exc:
+            raise ToolError("Inventory path escapes the repository root") from exc
+        if ".." in relative.parts or not relative.parts:
+            raise ToolError("Inventory path escapes the repository root")
+        return relative.as_posix()
+
+    def contains(self, path: Path) -> bool:
+        """Return whether a regular file is available to this inventory."""
+
+        try:
+            relative = self._relative(path)
+        except ToolError:
+            return False
+        if self.restricted:
+            return relative in self._selected_set
+        candidate = self.root / relative
+        return candidate.is_file() and not candidate.is_symlink()
+
+    def resolve(self, path: Path, *, allowed_extensions: set[str] | None = None) -> Path:
+        """Resolve an inventory path without widening a restricted source."""
+
+        relative = self._relative(path)
+        if self.restricted:
+            if relative not in self._selected_set:
+                raise ToolError("Inventory path is outside the approved input set")
+            candidate = self.root / relative
+            if allowed_extensions is not None and candidate.suffix.lower() not in allowed_extensions:
+                raise ToolError("Inventory path has an unsupported extension")
+            return candidate
+        return resolve_repo_path(
+            self.root,
+            self.root / relative,
+            allowed_extensions=allowed_extensions,
+        )
+
+    def read_text(self, path: Path) -> str:
+        """Read a file through the configured policy."""
+
+        relative = self._relative(path)
+        if self.restricted:
+            if relative not in self._selected_set or self._reader is None:
+                raise ToolError("Inventory path is outside the approved input set")
+            return self._reader(relative)
+        return (self.root / relative).read_text(encoding="utf-8")
+
+    def selected_paths(self) -> tuple[Path, ...]:
+        """Return the closed path set; unrestricted callers receive no paths."""
+
+        if self._selected is None:
+            return ()
+        return tuple(self.root / relative for relative in self._selected)
 
 
 def _relative(root: Path, path: Path) -> str:
@@ -105,34 +193,35 @@ def _requirement_lines(
     root: Path,
     path: Path,
     seen: set[Path] | None = None,
+    *,
+    source: InventorySource | None = None,
 ) -> Iterator[tuple[Path, int, str]]:
+    source = source or InventorySource(root)
     seen = seen or set()
-    if not path.is_file() or path.is_symlink():
+    if not source.contains(path):
         return
-    path = resolve_repo_path(
-        root,
+    path = source.resolve(
         path,
         allowed_extensions={".in", ".txt"},
     )
     if path in seen:
         return
     seen.add(path)
-    for line_number, raw_line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+    for line_number, raw_line in enumerate(source.read_text(path).splitlines(), start=1):
         stripped = raw_line.strip()
         if not stripped or stripped.startswith("#"):
             continue
         include = re.match(r"^(?:-r|--requirement|-c|--constraint)\s+(.+)$", stripped)
         if include:
             try:
-                include_path = resolve_repo_path(
-                    root,
+                include_path = source.resolve(
                     path.parent / include.group(1).strip(),
                     allowed_extensions={".in", ".txt"},
                 )
             except ToolError:
                 yield path, line_number, raw_line
                 continue
-            yield from _requirement_lines(root, include_path, seen)
+            yield from _requirement_lines(root, include_path, seen, source=source)
             continue
         yield path, line_number, raw_line
 
@@ -141,9 +230,11 @@ def collect_python_declarations(
     root: Path,
     *,
     discover_consumers: bool = True,
+    source: InventorySource | None = None,
 ) -> list[Declaration]:
     """Read direct PEP 508 declarations without consulting installed packages."""
 
+    source = source or InventorySource(root)
     requirement_files = [
         root / "requirements.txt",
         root / "requirements-dev.txt",
@@ -153,7 +244,11 @@ def collect_python_declarations(
     malformed: list[Declaration] = []
     for requirement_file in requirement_files:
         category = "python-dev" if requirement_file.name == "requirements-dev.txt" else "python-production"
-        for path, line_number, raw_line in _requirement_lines(root, requirement_file):
+        for path, line_number, raw_line in _requirement_lines(
+            root,
+            requirement_file,
+            source=source,
+        ):
             line = raw_line.split(" #", 1)[0].strip()
             if line.startswith("-e "):
                 line = line[3:].strip()
@@ -221,10 +316,10 @@ def collect_python_declarations(
     return declarations + malformed
 
 
-def _parse_go_requirements(go_mod: Path) -> list[tuple[int, str, str]]:
+def _parse_go_requirements(content: str) -> list[tuple[int, str, str]]:
     declarations: list[tuple[int, str, str]] = []
     in_require_block = False
-    for line_number, raw_line in enumerate(go_mod.read_text(encoding="utf-8").splitlines(), start=1):
+    for line_number, raw_line in enumerate(content.splitlines(), start=1):
         stripped = raw_line.strip()
         if stripped == "require (":
             in_require_block = True
@@ -249,14 +344,17 @@ def collect_go_declarations(
     root: Path,
     *,
     discover_consumers: bool = True,
+    source: InventorySource | None = None,
 ) -> list[Declaration]:
     """Collect direct Go dependencies and the declared Go language version."""
 
+    source = source or InventorySource(root)
     go_mod = root / "scripts" / "backup-tui" / "go.mod"
-    if not go_mod.is_file():
+    if not source.contains(go_mod):
         return []
     declarations: list[Declaration] = []
-    lines = go_mod.read_text(encoding="utf-8").splitlines()
+    content = source.read_text(go_mod)
+    lines = content.splitlines()
     for line_number, line in enumerate(lines, start=1):
         match = re.fullmatch(r"\s*go\s+(\d+(?:\.\d+){1,2})\s*", line)
         if match:
@@ -274,7 +372,7 @@ def collect_go_declarations(
                 )
             )
             break
-    for line_number, module, version in _parse_go_requirements(go_mod):
+    for line_number, module, version in _parse_go_requirements(content):
         definition = _line_location(root, go_mod, line_number)
         declarations.append(
             Declaration(
@@ -307,11 +405,15 @@ def collect_stack_platform_declarations(
     root: Path,
     *,
     discover_consumers: bool = True,
+    source: InventorySource | None = None,
 ) -> list[Declaration]:
     """Collect platform versions from the central StackConstants class."""
 
+    source = source or InventorySource(root)
     constants_path = root / "openemr_ecs" / "constants.py"
-    tree = ast.parse(constants_path.read_text(encoding="utf-8"), filename=str(constants_path))
+    if not source.contains(constants_path):
+        return []
+    tree = ast.parse(source.read_text(constants_path), filename=str(constants_path))
     assignments: dict[str, tuple[int, str]] = {}
     for node in ast.walk(tree):
         if not isinstance(node, (ast.Assign, ast.AnnAssign)):
@@ -396,13 +498,29 @@ def collect_stack_platform_declarations(
     return declarations
 
 
-def collect_action_declarations(root: Path) -> list[Declaration]:
+def collect_action_declarations(
+    root: Path,
+    *,
+    source: InventorySource | None = None,
+) -> list[Declaration]:
     """Collect unique external GitHub Actions pins."""
 
+    source = source or InventorySource(root)
     matches: dict[str, list[tuple[Path, int, str, str]]] = defaultdict(list)
     pattern = re.compile(r"^\s*(?:-\s*)?uses:\s*([^@\s#]+)@([^\s#]+)(?:\s+#\s*(\S+))?")
-    for workflow in sorted((root / ".github" / "workflows").glob("*.yml")):
-        for line_number, line in enumerate(workflow.read_text(encoding="utf-8").splitlines(), start=1):
+    workflows = (
+        [
+            path
+            for path in source.selected_paths()
+            if path.parent == source.root / ".github" / "workflows" and path.suffix == ".yml"
+        ]
+        if source.restricted
+        else list((root / ".github" / "workflows").glob("*.yml"))
+    )
+    for workflow in sorted(workflows):
+        if not source.contains(workflow):
+            continue
+        for line_number, line in enumerate(source.read_text(workflow).splitlines(), start=1):
             match = pattern.match(line)
             if not match or match.group(1).startswith(("./", "docker://")):
                 continue
@@ -442,16 +560,21 @@ def collect_action_declarations(root: Path) -> list[Declaration]:
     return declarations
 
 
-def collect_precommit_declarations(root: Path) -> list[Declaration]:
+def collect_precommit_declarations(
+    root: Path,
+    *,
+    source: InventorySource | None = None,
+) -> list[Declaration]:
     """Collect repository and revision pairs from pre-commit configuration."""
 
+    source = source or InventorySource(root)
     config_path = root / ".pre-commit-config.yaml"
-    if not config_path.is_file():
+    if not source.contains(config_path):
         return []
     repository: str | None = None
     repository_line = 0
     declarations: list[Declaration] = []
-    for line_number, line in enumerate(config_path.read_text(encoding="utf-8").splitlines(), start=1):
+    for line_number, line in enumerate(source.read_text(config_path).splitlines(), start=1):
         repo_match = re.match(r"\s*-\s+repo:\s*(\S+)", line)
         if repo_match:
             repository = repo_match.group(1)
@@ -496,15 +619,18 @@ def collect_node_declarations(
     root: Path,
     *,
     discover_consumers: bool = True,
+    source: InventorySource | None = None,
 ) -> list[Declaration]:
     """Collect resolved Node.js dependencies from the committed npm manifest."""
 
+    source = source or InventorySource(root)
     package_path = root / "package.json"
-    if not package_path.is_file():
+    if not source.contains(package_path):
         return []
-    package = json.loads(package_path.read_text(encoding="utf-8"))
+    package_content = source.read_text(package_path)
+    package = json.loads(package_content)
     lock_path = root / "package-lock.json"
-    lock = json.loads(lock_path.read_text(encoding="utf-8")) if lock_path.is_file() else {}
+    lock = json.loads(source.read_text(lock_path)) if source.contains(lock_path) else {}
     locked_packages = lock.get("packages", {}) if isinstance(lock, dict) else {}
     if not isinstance(locked_packages, dict):
         locked_packages = {}
@@ -518,7 +644,7 @@ def collect_node_declarations(
             if isinstance(name, str) and isinstance(constraint, str):
                 dependencies[name] = constraint
 
-    lines = package_path.read_text(encoding="utf-8").splitlines()
+    lines = package_content.splitlines()
     declarations: list[Declaration] = []
     for name, constraint in sorted(dependencies.items()):
         locked = locked_packages.get(f"node_modules/{name}", {})
@@ -546,9 +672,14 @@ def collect_node_declarations(
     return declarations
 
 
-def collect_workflow_toolchains(root: Path) -> list[Declaration]:
+def collect_workflow_toolchains(
+    root: Path,
+    *,
+    source: InventorySource | None = None,
+) -> list[Declaration]:
     """Collect shared toolchain versions from workflows and runtime manifests."""
 
+    source = source or InventorySource(root)
     declarations: dict[str, list[tuple[Path, int, str, str]]] = defaultdict(list)
     patterns = [
         (
@@ -580,15 +711,26 @@ def collect_workflow_toolchains(root: Path) -> list[Declaration]:
             re.compile(r"golangci-lint(?:/v2)?/cmd/golangci-lint@([^\s\"']+)"),
         ),
     ]
-    for workflow in sorted((root / ".github" / "workflows").glob("*.yml")):
-        for line_number, line in enumerate(workflow.read_text(encoding="utf-8").splitlines(), start=1):
+    workflows = (
+        [
+            path
+            for path in source.selected_paths()
+            if path.parent == source.root / ".github" / "workflows" and path.suffix == ".yml"
+        ]
+        if source.restricted
+        else list((root / ".github" / "workflows").glob("*.yml"))
+    )
+    for workflow in sorted(workflows):
+        if not source.contains(workflow):
+            continue
+        for line_number, line in enumerate(source.read_text(workflow).splitlines(), start=1):
             for identifier, name, source_kind, pattern in patterns:
                 match = pattern.search(line)
                 if match:
                     declarations[identifier].append((workflow, line_number, match.group(1), name + "|" + source_kind))
     package_path = root / "package.json"
-    if package_path.is_file():
-        package_lines = package_path.read_text(encoding="utf-8").splitlines()
+    if source.contains(package_path):
+        package_lines = source.read_text(package_path).splitlines()
         package = json.loads("\n".join(package_lines))
         engines = package.get("engines", {}) if isinstance(package, dict) else {}
         node_constraint = engines.get("node") if isinstance(engines, dict) else None
@@ -601,12 +743,18 @@ def collect_workflow_toolchains(root: Path) -> list[Declaration]:
             declarations["toolchain:node"].append(
                 (package_path, line_number, node_major.group(1), "Node.js toolchain|node-toolchain")
             )
-    for directory, child_directories, filenames in os.walk(root):
-        child_directories[:] = sorted(name for name in child_directories if name not in _SKIP_DIRECTORIES)
-        if "Dockerfile" not in filenames:
+    if source.restricted:
+        dockerfiles = [path for path in source.selected_paths() if path.name == "Dockerfile"]
+    else:
+        dockerfiles = []
+        for directory, child_directories, filenames in os.walk(root):
+            child_directories[:] = sorted(name for name in child_directories if name not in _SKIP_DIRECTORIES)
+            if "Dockerfile" in filenames:
+                dockerfiles.append(Path(directory) / "Dockerfile")
+    for dockerfile in sorted(dockerfiles):
+        if not source.contains(dockerfile):
             continue
-        dockerfile = Path(directory) / "Dockerfile"
-        for line_number, line in enumerate(dockerfile.read_text(encoding="utf-8").splitlines(), start=1):
+        for line_number, line in enumerate(source.read_text(dockerfile).splitlines(), start=1):
             match = re.match(r"\s*ARG\s+PYTHON_VERSION=([^\s#]+)", line)
             if match:
                 declarations["toolchain:python"].append(
@@ -643,17 +791,39 @@ def collect_declarations(
     root: Path,
     *,
     discover_consumers: bool = True,
+    source: InventorySource | None = None,
 ) -> tuple[Declaration, ...]:
     """Return the full normalized, deduplicated declaration inventory."""
 
+    source = source or InventorySource(root)
+    if root.resolve() != source.root:
+        raise ValueError("Inventory source root does not match the collection root")
+    if source.restricted and discover_consumers:
+        raise ValueError("Restricted inventory sources cannot perform unrestricted consumer discovery")
     declarations = [
-        *collect_python_declarations(root, discover_consumers=discover_consumers),
-        *collect_go_declarations(root, discover_consumers=discover_consumers),
-        *collect_stack_platform_declarations(root, discover_consumers=discover_consumers),
-        *collect_action_declarations(root),
-        *collect_precommit_declarations(root),
-        *collect_node_declarations(root, discover_consumers=discover_consumers),
-        *collect_workflow_toolchains(root),
+        *collect_python_declarations(
+            root,
+            discover_consumers=discover_consumers,
+            source=source,
+        ),
+        *collect_go_declarations(
+            root,
+            discover_consumers=discover_consumers,
+            source=source,
+        ),
+        *collect_stack_platform_declarations(
+            root,
+            discover_consumers=discover_consumers,
+            source=source,
+        ),
+        *collect_action_declarations(root, source=source),
+        *collect_precommit_declarations(root, source=source),
+        *collect_node_declarations(
+            root,
+            discover_consumers=discover_consumers,
+            source=source,
+        ),
+        *collect_workflow_toolchains(root, source=source),
     ]
     seen: set[str] = set()
     unique: list[Declaration] = []
