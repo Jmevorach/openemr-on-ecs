@@ -38,7 +38,7 @@
     "gacl_aro_seq": {"rows": 1, "sha256": "25d4f2a86deb5e2574bb3210b67bb24fcc4afb19f93a7b65a057daa874a9d18e"},
     "gacl_groups_aro_map": {"rows": 2, "sha256": "c448d1307aa54c8f99f66fc26447d8b82595c47045445be3acb9bbc92d8f8258"},
     "gacl_phpgacl": {"rows": 2, "sha256": "4a6fa12deabe69847a3cc22241632748db40038aaa86aae84ceec829eb32a015"},
-    "globals": {"rows": 490, "sha256": "3e81127a314c38d3439c05014614f373bf471a3a4086dd1fce7c9f13002513c4"},
+    "globals": {"rows": 490, "sha256": "690e821f0c6601cc5c1c4c1aaddbab2e2652e6ffe4529c88263123f284885b1f"},
     "groups": {"rows": 1, "sha256": null},
     "insurance_type_codes": {"rows": 26, "sha256": "1c9143e683e9d40a97519a8dce89b0d4fa9699a065a485b360e51270716263ad"},
     "issue_types": {"rows": 13, "sha256": "904cd0e314f5e21590877ad7a4f86805456cd992d553ab0e1b27c75f1fde1a0a"},
