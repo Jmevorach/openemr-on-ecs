@@ -1063,7 +1063,7 @@ def _assert_empty_target(
                 or not re.fullmatch(r"[0-9a-f]{64}", expected_sha256)
                 or _seed_table_fingerprint(database, table) != expected_sha256
             ):
-                raise ImportFailure("target-seed-content-mismatch")
+                raise ImportFailure(f"target-seed-content-mismatch:{table}")
     actual_version, actual_database_version = _database_version_identity(database)
     if (
         Version(actual_version) != Version(expected_openemr_version)
