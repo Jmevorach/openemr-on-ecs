@@ -16,7 +16,7 @@ from constructs import Construct
 
 from .kms_keys import KmsKeys
 from .nag_suppressions import acknowledge_findings, suppress_vpc_endpoint_security_group_findings
-from .utils import get_resource_suffix, is_true
+from .utils import get_resource_suffix, is_true, serverless_cache_name
 
 
 class DatabaseComponents:
@@ -373,11 +373,9 @@ class DatabaseComponents:
         """
         private_subnets_ids = [ps.subnet_id for ps in vpc.private_subnets]
 
-        # Create the Valkey cluster with a unique name based on the stack name and random suffix to avoid collisions
-        # serverless_cache_name must be between 1-40 alphanumeric characters and start with a letter
-        stack_name_sanitized = Stack.of(self.scope).stack_name.lower()[:20]
+        # Keep historical names when valid and shorten only over-limit names.
         suffix = get_resource_suffix(context)
-        cache_name = f"{stack_name_sanitized}-{suffix}-valkey"
+        cache_name = serverless_cache_name(Stack.of(self.scope).stack_name, suffix)
 
         self.valkey_cluster = elasticache.CfnServerlessCache(
             scope=self.scope,
