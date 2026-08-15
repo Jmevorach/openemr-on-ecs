@@ -191,6 +191,7 @@ def test_stack_inventory_uses_ast_not_regex(tmp_path: Path) -> None:
     (root / "openemr_ecs" / "constants.py").write_text(
         "class StackConstants:\n"
         "    OPENEMR_VERSION = '8.1.1'\n"
+        "    OPENEMR_ARM64_DIGEST = 'sha256:" + ("a" * 64) + "'\n"
         "    AURORA_MYSQL_ENGINE_VERSION = rds.AuroraMysqlEngineVersion.VER_3_12_0\n"
         "    LAMBDA_PYTHON_RUNTIME = runtime.PYTHON_3_14\n"
         "    EMR_SERVERLESS_RELEASE_LABEL = 'emr-7.13.0'\n",
@@ -200,6 +201,7 @@ def test_stack_inventory_uses_ast_not_regex(tmp_path: Path) -> None:
     declarations = {item.identifier: item for item in collect_stack_platform_declarations(root)}
 
     assert declarations["container:openemr"].current == "8.1.1"
+    assert declarations["container:openemr"].metadata["arm64_digest"] == ("sha256:" + ("a" * 64))
     assert declarations["platform:aurora-mysql"].current == "3.12.0"
     assert declarations["platform:lambda-python"].current == "3.14"
 
@@ -368,7 +370,7 @@ class _FakeClient:
 
 def test_pypi_source_excludes_prereleases_and_yanked_releases() -> None:
     source = VersionSources(
-        _FakeClient(
+        _FakeClient(  # type: ignore[arg-type]
             {
                 "releases": {
                     "1.0.0": [{"yanked": False}],
@@ -402,7 +404,7 @@ def test_npm_latest_must_be_a_stable_semantic_version() -> None:
 
 def test_python_toolchain_uses_published_stable_python_org_releases() -> None:
     source = VersionSources(
-        _FakeClient(
+        _FakeClient(  # type: ignore[arg-type]
             [
                 {
                     "name": "Python 3.14.7",
@@ -508,7 +510,19 @@ def test_aurora_source_stays_on_declared_engine_line() -> None:
     assert resolution.latest.startswith("3.")
 
 
-def test_openemr_source_requires_official_release_and_arm64() -> None:
+@pytest.mark.parametrize(
+    ("pinned_digest", "reference_verified"),
+    [
+        ("sha256:" + ("1" * 64), True),
+        ("sha256:" + ("f" * 64), False),
+        ("sha256:" + ("A" * 64), False),
+        ("", False),
+    ],
+)
+def test_openemr_source_requires_official_release_and_arm64_digest(
+    pinned_digest: str,
+    reference_verified: bool,
+) -> None:
     class OpenEmrClient:
         def get_json(self, url: str) -> object:
             if "hub.docker.com" in url:
@@ -516,16 +530,50 @@ def test_openemr_source_requires_official_release_and_arm64() -> None:
                     "results": [
                         {
                             "name": "8.1.1",
-                            "images": [{"architecture": "arm64"}],
+                            "images": [
+                                {
+                                    "architecture": "arm64",
+                                    "os": "linux",
+                                    "digest": "sha256:" + ("1" * 64),
+                                }
+                            ],
                         },
-                        {"name": "8.1.2", "images": [{"architecture": "arm64"}]},
-                        {"name": "8.1.3", "images": [{"architecture": "arm64"}]},
-                        {"name": "8.1.4", "images": [{"architecture": "amd64"}]},
+                        {
+                            "name": "8.1.2",
+                            "images": [
+                                {
+                                    "architecture": "arm64",
+                                    "os": "linux",
+                                    "digest": "sha256:" + ("2" * 64),
+                                }
+                            ],
+                        },
+                        {
+                            "name": "8.1.3",
+                            "images": [
+                                {
+                                    "architecture": "arm64",
+                                    "os": "linux",
+                                    "digest": "sha256:" + ("3" * 64),
+                                }
+                            ],
+                        },
+                        {
+                            "name": "8.1.4",
+                            "images": [
+                                {
+                                    "architecture": "amd64",
+                                    "os": "linux",
+                                    "digest": "sha256:" + ("4" * 64),
+                                }
+                            ],
+                        },
                     ],
                     "next": None,
                 }
             if "api.github.com/repos/openemr/openemr/releases" in url:
                 return [
+                    {"tag_name": "v8_1_1", "draft": False, "prerelease": False},
                     {"tag_name": "v8_1_2", "draft": False, "prerelease": False},
                     {"tag_name": "v8_1_3", "draft": True, "prerelease": False},
                 ]
@@ -541,11 +589,13 @@ def test_openemr_source_requires_official_release_and_arm64() -> None:
             category="container",
             current="8.1.1",
             source_kind="openemr-container",
+            metadata={"arm64_digest": pinned_digest},
         )
     )
 
     assert resolution.latest == "8.1.2"
     assert resolution.latest_prerelease is None
+    assert resolution.current_reference_verified is reference_verified
 
 
 @pytest.mark.parametrize(

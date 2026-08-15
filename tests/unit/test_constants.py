@@ -46,6 +46,12 @@ class TestVersionConstants:
     def test_openemr_version_format(self):
         assert re.match(r"^\d+\.\d+\.\d+$", StackConstants.OPENEMR_VERSION)
 
+    def test_openemr_version_is_8_2_0(self):
+        assert StackConstants.OPENEMR_VERSION == "8.2.0"
+
+    def test_openemr_arm64_digest_format(self):
+        assert re.fullmatch(r"sha256:[0-9a-f]{64}", StackConstants.OPENEMR_ARM64_DIGEST)
+
     def test_credential_rotation_python_version_format(self):
         assert re.match(r"^\d+\.\d+$", StackConstants.CREDENTIAL_ROTATION_PYTHON_VERSION)
 

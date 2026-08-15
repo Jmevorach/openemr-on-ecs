@@ -371,6 +371,16 @@ def collect_stack_platform_declarations(
             current = raw_value
         definition = _line_location(root, constants_path, line_number)
         metadata = {"constant": constant_name, "raw_value": raw_value}
+        explicit_consumers: tuple[str, ...] = ()
+        if constant_name == "OPENEMR_VERSION":
+            digest_assignment = assignments.get("OPENEMR_ARM64_DIGEST")
+            if digest_assignment is None:
+                metadata["arm64_digest"] = ""
+            else:
+                digest_line, digest = digest_assignment
+                metadata["arm64_digest"] = digest
+                explicit_consumers = (_line_location(root, constants_path, digest_line),)
+        discovered_consumers = _discover_value_consumers(root, current, (definition,)) if discover_consumers else ()
         declarations.append(
             Declaration(
                 identifier=identifier,
@@ -379,7 +389,7 @@ def collect_stack_platform_declarations(
                 current=current,
                 definition=definition,
                 source_kind=source_kind,
-                consumers=(_discover_value_consumers(root, current, (definition,)) if discover_consumers else ()),
+                consumers=tuple(sorted(set((*discovered_consumers, *explicit_consumers)))),
                 metadata=metadata,
             )
         )

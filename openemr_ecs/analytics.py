@@ -20,6 +20,7 @@ from aws_cdk import aws_sagemaker as sagemaker
 from constructs import Construct
 
 from .assets import python_lambda_code
+from .constants import StackConstants
 from .nag_suppressions import (
     acknowledge_findings,
     suppress_lambda_common_findings,
@@ -305,7 +306,9 @@ class AnalyticsComponents:
             container_name="openemr",
             entry_point=["/bin/sh", "-c"],
             command=command_array,
-            image=ecs.ContainerImage.from_registry(f"openemr/openemr:{openemr_version}"),
+            image=ecs.ContainerImage.from_registry(
+                f"openemr/openemr:{openemr_version}@{StackConstants.OPENEMR_ARM64_DIGEST}"
+            ),
         )
 
         # Suppress execution role inline policy (after container creates DefaultPolicy)
