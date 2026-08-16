@@ -88,6 +88,12 @@ while ((SECONDS < deadline)); do
     break
   fi
   if [[ "$(docker inspect -f '{{.State.Running}}' "${OPENEMR_CONTAINER}" 2>/dev/null || echo false)" != "true" ]]; then
+    if docker cp "${OPENEMR_CONTAINER}:/var/www/localhost/htdocs/openemr/sites/docker-completed" \
+      "${LOG_DIR}/docker-completed" 2>/dev/null; then
+      log "Found sites/docker-completed in stopped container after setup"
+      ready=1
+      break
+    fi
     compose logs --tail=200 openemr-test-ssl | tee "${LOG_DIR}/openemr.log"
     log "ERROR: OpenEMR stopped before bootstrap completed"
     exit 1
@@ -107,11 +113,18 @@ sleep 5
 log "==> Exporting OpenEMR sites tree"
 rm -rf "${RAW_SITES}" "${FIXTURES}" "${SITES_MOUNT}"
 mkdir -p "${RAW_SITES}" "${FIXTURES}" "${SITES_MOUNT}"
-# OpenEMR ships some site dirs as mode 0500; docker cp preserves that and then
-# fails mid-copy when writing files into those directories. Stream via tar instead.
-docker exec "${OPENEMR_CONTAINER}" \
-  tar -C /var/www/localhost/htdocs/openemr/sites -cf - . \
-  | tar -C "${RAW_SITES}" -xf -
+# OpenEMR ships some site dirs as mode 0500; a filesystem docker cp preserves
+# that and then fails mid-copy. Stream a tar instead. Prefer docker exec when
+# the container is still up; fall back to docker cp's tar stdout for a
+# container that exited after writing docker-completed (QEMU Apache mutex).
+if [[ "$(docker inspect -f '{{.State.Running}}' "${OPENEMR_CONTAINER}" 2>/dev/null || echo false)" == "true" ]]; then
+  docker exec "${OPENEMR_CONTAINER}" \
+    tar -C /var/www/localhost/htdocs/openemr/sites -cf - . \
+    | tar -C "${RAW_SITES}" -xf -
+else
+  docker cp "${OPENEMR_CONTAINER}:/var/www/localhost/htdocs/openemr/sites" - \
+    | tar -C "${RAW_SITES}" --strip-components=1 -xf -
+fi
 chmod -R u+rwX "${RAW_SITES}"
 docker cp "${MYSQL_CONTAINER}:/mysql-ssl-certs/ca-cert.pem" "${FIXTURES}/ca-cert.pem"
 chmod 644 "${FIXTURES}/ca-cert.pem"

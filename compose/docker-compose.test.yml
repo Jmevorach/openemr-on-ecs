@@ -1,7 +1,8 @@
 services:
   # Simulate the ECS container startup for testing
   openemr-test:
-    image: openemr/openemr:8.2.0
+    image: openemr/openemr:8.2.0@sha256:c14720d5ef13ba10142d16400375ad25af3e7f6bfa5e0ef4ea3a4417b46f1d51
+    platform: linux/arm64
     container_name: openemr-container-test
     # Exact copy of startup script from compute.py - matches production ECS deployment
     command:
@@ -147,6 +148,13 @@ services:
         fi
         chmod +x ./openemr.sh || { log "ERROR: Failed to make openemr.sh executable"; exit 1; }
         log "openemr.sh is executable"
+        for httpd_conf in /etc/apache2/httpd.conf /etc/httpd/conf/httpd.conf; do
+          if [ -f "$$httpd_conf" ] && ! grep -qE '^[[:space:]]*Mutex[[:space:]]' "$$httpd_conf"; then
+            printf '\n# QEMU user emulation cannot create Apache'\''s default accept mutex.\nMutex posixsem\n' >> "$$httpd_conf"
+            log "Configured Apache Mutex posixsem for emulated ARM64"
+            break
+          fi
+        done
         if ! grep -q "httpd -k graceful" /etc/crontabs/root 2>/dev/null; then
           echo "1 23  *   *   *   httpd -k graceful" >> /etc/crontabs/root
           log "Added Apache graceful restart cron job"

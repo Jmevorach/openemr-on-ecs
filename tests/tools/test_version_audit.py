@@ -229,13 +229,18 @@ def test_stack_inventory_uses_ast_not_regex(tmp_path: Path) -> None:
 def test_compose_openemr_images_match_the_deployment_version() -> None:
     root = Path(__file__).resolve().parents[2]
     declarations = {item.identifier: item for item in collect_stack_platform_declarations(root)}
-    expected = f"openemr/openemr:{declarations['container:openemr'].current}"
+    expected = (
+        f"openemr/openemr:{declarations['container:openemr'].current}"
+        f"@{declarations['container:openemr'].metadata['arm64_digest']}"
+    )
 
     for compose_file in (
         root / "compose" / "docker-compose.test.yml",
         root / "compose" / "docker-compose.test-ssl.yml",
     ):
-        assert f"image: {expected}" in compose_file.read_text(encoding="utf-8")
+        text = compose_file.read_text(encoding="utf-8")
+        assert f"image: {expected}" in text
+        assert "platform: linux/arm64" in text
 
 
 def test_actions_inventory_deduplicates_consumers(tmp_path: Path) -> None:
