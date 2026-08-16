@@ -202,3 +202,22 @@ credentials. Before release, verify the fork and push target, run normal
 validation, and use `.github/workflows/manual-release.yml`. Monitor ordinary
 GitHub Actions checks until green or until a confirmed external service,
 permission, or quota blocks progress.
+
+## Live deployment E2E and timing
+
+The guarded live E2E runner requires Python 3.14, Node.js 24, Docker with
+Buildx, and the repository-pinned CDK and `cdk-assets` binaries installed by
+`npm ci`. It rejects global CDK installations and unsupported tool versions.
+
+Tests, formatting, static analysis, and
+`python -m tools.live_e2e report` are local-only. `preflight` performs local
+synthesis and read-only AWS checks; `run` and `cleanup` mutate AWS and require
+the complete account, ownership, cost, and confirmation guard set documented
+in [LIVE-E2E.md](LIVE-E2E.md). No regular GitHub Actions workflow may invoke an
+AWS-facing live E2E command.
+
+The sanitized timing source is
+[`e2e-results/history.json`](e2e-results/history.json), and its deterministic
+report is [docs/deployment-timing.md](docs/deployment-timing.md). Commit those
+files together only after an approved run. Owner-only state under
+`.live-e2e/` can contain AWS identifiers and must remain untracked.

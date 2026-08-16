@@ -381,6 +381,11 @@ class StorageComponents:
                 "CloudTrailLogGroup",
                 encryption_key=logs_kms_key,
                 retention=logs.RetentionDays.NINE_YEARS,
+                removal_policy=(
+                    RemovalPolicy.DESTROY
+                    if self.scope.node.try_get_context("live_e2e_run_id")
+                    else RemovalPolicy.RETAIN
+                ),
             ),
             management_events=cloudtrail.ReadWriteType.ALL,
         )

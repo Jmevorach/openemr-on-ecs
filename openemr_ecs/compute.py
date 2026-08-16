@@ -82,7 +82,12 @@ class ComputeComponents:
             self.kms_key.grant_encrypt_decrypt(iam.ServicePrincipal("s3.amazonaws.com"))
 
             # Create log group for ECS Exec
-            self.ecs_exec_group = logs.LogGroup(self.scope, f"LogGroup-{suffix}", encryption_key=self.kms_key)
+            self.ecs_exec_group = logs.LogGroup(
+                self.scope,
+                f"LogGroup-{suffix}",
+                encryption_key=self.kms_key,
+                removal_policy=RemovalPolicy.DESTROY if context.get("live_e2e_run_id") else RemovalPolicy.RETAIN,
+            )
 
             # Create S3 bucket for ECS Exec logs
             self.exec_bucket = s3.Bucket(
@@ -154,6 +159,7 @@ class ComputeComponents:
             "log-group",
             retention=logs.RetentionDays.ONE_WEEK,
             encryption_key=kms_key,
+            removal_policy=RemovalPolicy.DESTROY if context.get("live_e2e_run_id") else RemovalPolicy.RETAIN,
         )
 
         return (self.ecs_cluster, self.log_group, self.kms_key, self.ecs_exec_group, self.exec_bucket)
@@ -825,7 +831,7 @@ class ComputeComponents:
                 certificate=certificate,
                 min_healthy_percent=100,
                 cluster=ecs_cluster,
-                desired_count=context.get("openemr_service_fargate_minimum_capacity", 2),
+                desired_count=int(context.get("openemr_service_fargate_minimum_capacity") or 2),
                 # Allow OpenEMR first-boot install to complete before ECS starts judging ELB target health.
                 # 20 minutes aligns with our stale-leader cleanup and “stuck install” threshold.
                 health_check_grace_period=Duration.seconds(1200),

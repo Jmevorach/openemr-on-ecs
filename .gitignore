@@ -3,6 +3,7 @@ cdk.out/
 cdk.context.json
 diagrams/.cdk.out/
 diagrams/*.dot
+.live-e2e/
 *.pyc
 __pycache__/
 *.py[cod]

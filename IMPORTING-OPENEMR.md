@@ -165,9 +165,11 @@ rejects SQL client commands and stored executable definitions while enabling
 MariaDB sandbox and binary modes, proves every table outside the reviewed
 OpenEMR 8.2 seed/configuration set is empty, and verifies exact row counts plus
 content fingerprints against the checked-in 8.2 baseline. Runtime timestamps
-are excluded from fingerprints; the five credential-derived bootstrap identity
-tables retain exact row-count checks because their content depends on the
-generated administrator identity. Fingerprint queries use binary column
+are excluded from fingerprints, and `globals.gl_value` is excluded because
+first-boot writes a generated `unique_installation_id` and other
+non-deterministic setting values. The five credential-derived bootstrap
+identity tables retain exact row-count checks because their content depends on
+the generated administrator identity. Fingerprint queries use binary column
 ordering through the worker's pinned MariaDB client so ordering is independent
 of server collation. The fresh target must also contain no routines, events, or
 triggers; the rollback dump skips stored-code discovery for Aurora MySQL

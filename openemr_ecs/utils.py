@@ -38,6 +38,14 @@ def get_resource_suffix(context: dict) -> str:
     return str(result) if result is not None else "default"
 
 
+def get_ssm_parameter_name(base_name: str, context: dict) -> str:
+    """Return the historical or live-E2E-scoped SSM parameter name."""
+
+    if context.get("live_e2e_run_id"):
+        return f"{base_name}_{get_resource_suffix(context)}"
+    return base_name
+
+
 def serverless_cache_name(stack_name: str, suffix: str) -> str:
     """Build a valid Valkey name without renaming existing valid caches.
 
