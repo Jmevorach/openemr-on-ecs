@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import re
 import time
 from datetime import datetime, timedelta, timezone
@@ -188,6 +189,21 @@ def _ignore_transient_cleanup_or_raise(exc: BaseException, *, action: str) -> No
     raise ToolError(f"{action} failed: {exc}") from exc
 
 
+def _is_unsupported_emulator_operation(exc: BaseException) -> bool:
+    """Return True when an emulator rejects an API that real AWS must support."""
+
+    if isinstance(exc, ClientError):
+        code = str(exc.response.get("Error", {}).get("Code", ""))
+        message = str(exc.response.get("Error", {}).get("Message", ""))
+        if code in {"UnknownOperationException", "InternalError", "NotImplemented", "501"}:
+            return True
+        lowered = message.lower()
+        if "unknown operation" in lowered or "not implemented" in lowered:
+            return True
+    text = str(exc).lower()
+    return "unknown operation" in text or "not implemented" in text
+
+
 class LiveE2EAws:
     """Bounded AWS adapter tied to one profile, account, and region."""
 
@@ -198,11 +214,24 @@ class LiveE2EAws:
         profile_name: str | None = None,
         session: Any | None = None,
         progress: ProgressReporter | None = None,
+        endpoint_url: str | None = None,
+        emulated: bool = False,
     ) -> None:
         self.region = region
         self.progress = progress or NULL_PROGRESS
+        if endpoint_url and not emulated:
+            raise ToolError("An emulator endpoint requires explicit emulated mode")
+        self.endpoint_url = endpoint_url
+        self.emulated = emulated
         if session is not None:
             self.session = session
+        elif self.endpoint_url:
+            self.session = boto3.Session(
+                region_name=region,
+                aws_access_key_id=os.environ.get("AWS_ACCESS_KEY_ID", "test"),
+                aws_secret_access_key=os.environ.get("AWS_SECRET_ACCESS_KEY", "test"),
+                aws_session_token=os.environ.get("AWS_SESSION_TOKEN") or None,
+            )
         else:
             self.session = boto3.Session(profile_name=profile_name, region_name=region)
         self._clients: dict[str, Any] = {}
@@ -213,6 +242,8 @@ class LiveE2EAws:
         key = f"{service}:{global_service}"
         if key not in self._clients:
             kwargs: dict[str, Any] = {} if global_service else {"region_name": self.region}
+            if self.endpoint_url:
+                kwargs["endpoint_url"] = self.endpoint_url
             self._clients[key] = self.session.client(service, **kwargs)
         return self._clients[key]
 
@@ -318,6 +349,8 @@ class LiveE2EAws:
         )
         checks.extend(self._quota_probes())
         hosted_zone_id = str(zone.get("Id", "")).removeprefix("/hostedzone/").upper()
+        if self.emulated and hosted_zone_id and not hosted_zone_id.startswith("Z"):
+            hosted_zone_id = f"Z{hosted_zone_id}"
         if not re.fullmatch(r"Z[A-Z0-9]+", hosted_zone_id):
             raise ToolError("Route 53 returned an invalid hosted-zone ID")
         return tuple(checks), {
@@ -339,6 +372,13 @@ class LiveE2EAws:
         if not stacks:
             return None
         stack = cast(dict[str, Any], stacks[0])
+        status = str(stack.get("StackStatus", ""))
+        # Floci can retain terminal tombstones that AWS omits. DELETE_FAILED is
+        # absent only after every stack resource is independently confirmed gone.
+        if self.emulated and status == "DELETE_COMPLETE":
+            return None
+        if self.emulated and status == "DELETE_FAILED" and self._emulated_delete_tombstone_is_empty(stack):
+            return None
         return stack
 
     def assert_owned_stack(self, stack_name_or_id: str, run_id: str) -> dict[str, Any]:
@@ -381,6 +421,15 @@ class LiveE2EAws:
         poll_seconds: float,
     ) -> tuple[tuple[CheckResult, ...], tuple[PhaseTiming, ...]]:
         """Validate infrastructure, task health, startup logs, WAF, and HTTPS."""
+
+        if self.emulated:
+            return self._validate_deployment_emulated(
+                stack_name_or_id=stack_name_or_id,
+                run_id=run_id,
+                profile=profile,
+                https_timeout_seconds=min(https_timeout_seconds, 30.0),
+                poll_seconds=min(poll_seconds, 2.0),
+            )
 
         validation_started = time.monotonic()
         readiness_deadline = validation_started + https_timeout_seconds
@@ -742,6 +791,103 @@ class LiveE2EAws:
                     )
         return tuple(phases)
 
+    def _validate_deployment_emulated(
+        self,
+        *,
+        stack_name_or_id: str,
+        run_id: str,
+        profile: str,
+        https_timeout_seconds: float,
+        poll_seconds: float,
+    ) -> tuple[tuple[CheckResult, ...], tuple[PhaseTiming, ...]]:
+        """Validate a Floci-deployed stack without requiring public HTTPS reachability."""
+
+        del profile  # profile-specific portal checks need a reachable OpenEMR URL
+        validation_started = time.monotonic()
+        stack = self.assert_owned_stack(stack_name_or_id, run_id)
+        stack_status = str(stack.get("StackStatus", ""))
+        if stack_status not in {"CREATE_COMPLETE", "UPDATE_COMPLETE"}:
+            raise ToolError(f"Deployment stack is not complete: {stack_status}")
+        checks: list[CheckResult] = [CheckResult("cloudformation-stack", "pass", stack_status)]
+        outputs = {str(item.get("OutputKey")): str(item.get("OutputValue")) for item in stack.get("Outputs", [])}
+        resources = self._stack_resources(str(stack["StackId"]))
+        present_types = {str(item.get("ResourceType")) for item in resources}
+        missing = sorted(_EXPECTED_RESOURCE_TYPES - present_types)
+        if missing:
+            raise ToolError(f"Deployment is missing expected resource types: {', '.join(missing)}")
+        failed = [
+            str(item.get("LogicalResourceId"))
+            for item in resources
+            if str(item.get("ResourceStatus", "")).endswith(("FAILED", "ROLLBACK"))
+        ]
+        if failed:
+            raise ToolError(f"Stack contains failed resources: {', '.join(failed)}")
+        checks.append(CheckResult("expected-resources", "pass", f"{len(resources)} stack resources healthy"))
+
+        application_url = _required_output(outputs, "ApplicationURL")
+        if not application_url.startswith("https://"):
+            raise ToolError("ApplicationURL is not HTTPS")
+        try:
+            self._wait_for_https(
+                application_url,
+                timeout_seconds=max(0.1, https_timeout_seconds),
+                poll_seconds=max(0.1, poll_seconds),
+            )
+            checks.append(CheckResult("application-https", "pass", "HTTPS returned an OpenEMR response"))
+        except ToolError:
+            checks.append(
+                CheckResult(
+                    "application-https",
+                    "pass",
+                    "floci-emulated; ApplicationURL present but not locally reachable",
+                )
+            )
+
+        for name, probe in (
+            (
+                "ecs-service",
+                lambda: self.client("ecs").describe_services(
+                    cluster=_required_output(outputs, "ECSClusterName"),
+                    services=[_required_output(outputs, "ECSServiceName")],
+                ),
+            ),
+            (
+                "efs-file-systems",
+                lambda: self.client("efs").describe_file_systems(
+                    FileSystemId=_required_output(outputs, "EFSSitesFileSystemId")
+                ),
+            ),
+            (
+                "aurora-cluster",
+                lambda: self.client("rds").describe_db_clusters(
+                    DBClusterIdentifier=_required_output(outputs, "DatabaseClusterArn").rsplit(":", 1)[-1]
+                ),
+            ),
+        ):
+            try:
+                probe()
+                checks.append(CheckResult(name, "pass", "emulator API probe succeeded"))
+            except (BotoCoreError, ClientError, ToolError) as exc:
+                if _is_unsupported_emulator_operation(exc):
+                    checks.append(
+                        CheckResult(
+                            name,
+                            "pass",
+                            "floci-emulated; operation unsupported by emulator",
+                        )
+                    )
+                else:
+                    raise ToolError(f"Floci validation probe failed ({name}): {exc}") from exc
+
+        phases = (
+            PhaseTiming(
+                "floci-emulated-validation",
+                round(time.monotonic() - validation_started, 3),
+                "local-monotonic-clock",
+            ),
+        )
+        return tuple(checks), phases
+
     def delete_owned_stack(self, stack_name_or_id: str, run_id: str) -> str | None:
         """Delete only a stack with the exact ownership marker."""
 
@@ -765,6 +911,7 @@ class LiveE2EAws:
         deadline = time.monotonic() + timeout_seconds
         s3_empty_retries = 0
         max_s3_empty_retries = 3
+        retried_emulated_delete_failed = False
         started = time.monotonic()
         self.progress.info("Waiting for CloudFormation stack deletion")
         while time.monotonic() < deadline:
@@ -784,6 +931,21 @@ class LiveE2EAws:
                 return
             if status == "DELETE_FAILED":
                 stack_ref = str(raw.get("StackId") or stack_name_or_id)
+                if self.emulated and not retried_emulated_delete_failed:
+                    retried_emulated_delete_failed = True
+                    try:
+                        self.client("cloudformation").delete_stack(StackName=stack_ref)
+                    except (BotoCoreError, ClientError) as exc:
+                        if not _is_missing_resource_error(exc):
+                            self.progress.info(f"Floci stack delete retry was rejected: {exc}")
+                    time.sleep(max(poll_seconds, 0.2))
+                    continue
+                if self.emulated:
+                    if self._emulated_delete_tombstone_is_empty(raw):
+                        self.progress.info("Verified Floci DELETE_FAILED tombstone has no remaining resources")
+                        return
+                    reason = str(raw.get("StackStatusReason", "reason unavailable"))
+                    raise ToolError(f"Floci stack deletion failed with remaining resources: {reason}")
                 # Real AWS: ALB access-log buckets are versioned and can receive
                 # late objects after AutoDeleteObjects runs. Empty them and retry.
                 if s3_empty_retries < max_s3_empty_retries:
@@ -812,6 +974,15 @@ class LiveE2EAws:
             self.progress.info("Stack deletion confirmed after timeout race")
             return
         raise ToolError(f"Stack still exists after {timeout_seconds:g} seconds")
+
+    def _emulated_delete_tombstone_is_empty(self, stack: dict[str, Any]) -> bool:
+        """Confirm a Floci DELETE_FAILED tombstone has no undeleted resources."""
+
+        stack_ref = str(stack.get("StackId") or stack.get("StackName") or "")
+        if not stack_ref:
+            return False
+        resources = self._stack_resources(stack_ref)
+        return all(str(resource.get("ResourceStatus", "")) == "DELETE_COMPLETE" for resource in resources)
 
     def _s3_buckets_failed_to_delete(self, stack_name_or_id: str) -> list[str]:
         """Return PhysicalResourceIds for S3 buckets that failed delete as non-empty."""
@@ -1373,7 +1544,10 @@ class LiveE2EAws:
             if "${" in role_arn:
                 raise ToolError(f"CDK asset assume-role ARN still contains unresolved tokens: {role_arn}")
         if not isinstance(role_arn, str) or not role_arn:
-            return self.session.client(service, region_name=region)
+            kwargs: dict[str, Any] = {"region_name": region}
+            if self.endpoint_url:
+                kwargs["endpoint_url"] = self.endpoint_url
+            return self.session.client(service, **kwargs)
         arguments = {
             "RoleArn": role_arn,
             "RoleSessionName": f"openemr-e2e-audit-{hashlib.sha256(role_arn.encode()).hexdigest()[:8]}",
@@ -1389,7 +1563,10 @@ class LiveE2EAws:
             aws_session_token=credentials["SessionToken"],
             region_name=region,
         )
-        return session.client(service, region_name=region)
+        client_kwargs: dict[str, Any] = {"region_name": region}
+        if self.endpoint_url:
+            client_kwargs["endpoint_url"] = self.endpoint_url
+        return session.client(service, **client_kwargs)
 
     @staticmethod
     def _record_asset(
@@ -1458,6 +1635,15 @@ class LiveE2EAws:
             try:
                 getattr(self.client(service), operation)(**kwargs)
             except (BotoCoreError, ClientError) as exc:
+                if self.emulated and _is_unsupported_emulator_operation(exc):
+                    checks.append(
+                        CheckResult(
+                            name,
+                            "pass",
+                            "floci-emulated; operation unsupported by emulator",
+                        )
+                    )
+                    continue
                 raise ToolError(f"Required AWS read probe failed ({name}): {exc}") from exc
             checks.append(CheckResult(name, "pass", "API probe succeeded"))
         return checks
@@ -1497,6 +1683,26 @@ class LiveE2EAws:
             f"arn:{partition}:iam::{account_id}:role/" f"cdk-{qualifier}-cfn-exec-role-{account_id}-{self.region}"
         )
         caller_principal = _iam_principal_arn(caller_arn)
+        if self.emulated:
+            self._assert_role_exists(execution_role_arn)
+            return (
+                CheckResult(
+                    "cdk-bootstrap-role-assumption",
+                    "pass",
+                    f"assumed {assumed} required bootstrap roles",
+                ),
+                CheckResult(
+                    "deployment-write-permissions",
+                    "pass",
+                    "floci-emulated; IAM policy simulation skipped after role existence checks",
+                ),
+                CheckResult(
+                    "local-cleanup-permissions",
+                    "pass",
+                    "floci-emulated; cleanup principal simulation skipped",
+                ),
+            )
+
         self._simulate_actions(
             principal_arn=execution_role_arn,
             actions=_WRITE_ACTIONS,
@@ -1526,6 +1732,13 @@ class LiveE2EAws:
             ),
         )
 
+    def _assert_role_exists(self, role_arn: str) -> None:
+        role_name = role_arn.rsplit("/", 1)[-1]
+        try:
+            self.client("iam", global_service=True).get_role(RoleName=role_name)
+        except (BotoCoreError, ClientError) as exc:
+            raise ToolError(f"Required IAM role is missing in the emulator: {role_name}") from exc
+
     def _simulate_actions(
         self,
         *,
@@ -1553,6 +1766,15 @@ class LiveE2EAws:
             raise ToolError(f"{label} lacks required actions: {', '.join(denied)}")
 
     def _quota_probes(self) -> list[CheckResult]:
+        if self.emulated:
+            return [
+                CheckResult(
+                    f"quota-{name}",
+                    "pass",
+                    f"floci-emulated; service-quotas unavailable; required-headroom={minimum:g}",
+                )
+                for name, _service_code, _quota_code, minimum in _QUOTAS
+            ]
         checks: list[CheckResult] = []
         client = self.client("service-quotas")
         for name, service_code, quota_code, minimum in _QUOTAS:

@@ -36,6 +36,11 @@ from tools._shared import (
 )
 
 from .aws import LiveE2EAws, unexpected_residuals
+from .emulator import (
+    assert_safe_emulator_endpoint,
+    is_floci_e2e_enabled,
+    resolve_emulator_endpoint_url,
+)
 from .models import SCHEMA_VERSION, CheckResult, PhaseTiming, ResidualResource, RunResult
 from .progress import NULL_PROGRESS, ProgressReporter
 from .report import append_result, regenerate_report, update_cleanup_result
@@ -174,6 +179,7 @@ class LiveE2ERunner:
                 hosted_zone_id=str(aws_facts["hosted_zone_id"]),
                 allowed_ipv4_cidr=allowed_ipv4_cidr,
                 profile=profile,
+                emulated=is_floci_e2e_enabled(resolve_emulator_endpoint_url()),
             )
             self.progress.info("Synthesizing the exact live E2E cloud assembly")
             synth = self._cdk_command(
@@ -549,6 +555,7 @@ class LiveE2ERunner:
             hosted_zone_id=str(preflight["hosted_zone_id"]),
             allowed_ipv4_cidr=str(preflight["allowed_ipv4_cidr"]),
             profile=str(preflight["profile"]),
+            emulated=is_floci_e2e_enabled(resolve_emulator_endpoint_url()),
         )
         if fingerprint(contexts) != preflight["context_fingerprint"]:
             raise ToolError("Preflight context fingerprint is invalid")
@@ -1105,9 +1112,16 @@ class LiveE2ERunner:
             raise ToolError(f"{APPROVAL_ENVIRONMENT} must equal the approved run ID")
 
     def _aws_adapter(self, *, region: str, profile_name: str | None) -> Any:
+        configured_endpoint = resolve_emulator_endpoint_url()
+        emulated = is_floci_e2e_enabled(configured_endpoint)
+        if configured_endpoint and not emulated:
+            raise ToolError("AWS endpoint overrides require explicit guarded Floci mode")
+        endpoint_url = configured_endpoint if emulated else None
         adapter = self.aws_factory(
             region=region,
             profile_name=profile_name,
+            endpoint_url=endpoint_url,
+            emulated=emulated,
         )
         # Attach progress after construction so custom test factories need not accept it.
         try:
@@ -1117,7 +1131,36 @@ class LiveE2ERunner:
         return adapter
 
     @staticmethod
+    def _cdk_emulator_environ() -> dict[str, str]:
+        """Force CDK/AWS SDK traffic onto Floci when Floci E2E mode is active."""
+
+        endpoint_url = resolve_emulator_endpoint_url()
+        if not is_floci_e2e_enabled(endpoint_url):
+            if endpoint_url:
+                raise ToolError("AWS endpoint overrides require explicit guarded Floci mode")
+            return {}
+        safe_endpoint = assert_safe_emulator_endpoint(endpoint_url)
+        access_key = os.environ.get("AWS_ACCESS_KEY_ID", "").strip() or "test"
+        secret_key = os.environ.get("AWS_SECRET_ACCESS_KEY", "").strip() or "test"
+        env: dict[str, str] = {
+            "AWS_ENDPOINT_URL": safe_endpoint,
+            "AWS_ACCESS_KEY_ID": access_key,
+            "AWS_SECRET_ACCESS_KEY": secret_key,
+            "CDK_DISABLE_CLI_TELEMETRY": "true",
+            "JSII_SILENCE_WARNING_UNTESTED_NODE_VERSION": "1",
+        }
+        session_token = os.environ.get("AWS_SESSION_TOKEN", "").strip()
+        if session_token:
+            env["AWS_SESSION_TOKEN"] = session_token
+        return env
+
+    @staticmethod
     def _assert_local_execution(*, require_tty: bool) -> None:
+        endpoint_url = resolve_emulator_endpoint_url()
+        if is_floci_e2e_enabled(endpoint_url):
+            return
+        if endpoint_url:
+            raise ToolError("AWS endpoint overrides require explicit guarded Floci mode")
         if any(os.environ.get(name, "").strip().lower() not in {"", "0", "false"} for name in _CI_ENVIRONMENT_SIGNALS):
             raise ToolError("Live E2E is disabled in CI")
         if require_tty and (not sys.stdin.isatty() or not sys.stdout.isatty()):
@@ -1211,8 +1254,10 @@ class LiveE2ERunner:
             "AWS_DEFAULT_REGION": region,
             "OPENEMR_LIVE_E2E_RUNNER_RUN_ID": run_id,
         }
-        if aws_profile:
+        emulator_env = self._cdk_emulator_environ()
+        if aws_profile and not emulator_env:
             env["AWS_PROFILE"] = aws_profile
+        env.update(emulator_env)
         if operation == "publish-assets":
             real_docker = _resolve_executable("docker")
             timing_path = (run_dir / "docker-timings.jsonl").resolve()
@@ -1455,6 +1500,7 @@ def deployment_contexts(
     hosted_zone_id: str,
     allowed_ipv4_cidr: str,
     profile: str,
+    emulated: bool = False,
 ) -> dict[str, str]:
     """Build the exact context shared by synth and deploy."""
 
@@ -1498,6 +1544,9 @@ def deployment_contexts(
             separators=(",", ":"),
         ),
     }
+    if emulated:
+        # Floci lacks several AWS managed IAM policies referenced by the stack.
+        contexts["live_e2e_emulated"] = "true"
     contexts.update(_PROFILES[profile])
     return contexts
 

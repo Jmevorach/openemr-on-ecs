@@ -13,6 +13,7 @@ types-PyMySQL==1.2.0.20260807
 isort==8.0.1
 bandit==1.9.4
 pip-audit==2.10.1
+testcontainers-floci==0.1.1
 
 # Template validation
 cfn-lint==1.55.0

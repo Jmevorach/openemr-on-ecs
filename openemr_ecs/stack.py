@@ -31,7 +31,7 @@ from .nag_suppressions import acknowledge_findings
 from .network import NetworkComponents
 from .security import SecurityComponents
 from .storage import StorageComponents
-from .utils import get_ssm_parameter_name, is_true
+from .utils import get_ssm_parameter_name, is_live_e2e_emulated, is_true
 from .validation import ValidationError, validate_context
 from .version import __version__
 
@@ -85,6 +85,7 @@ class OpenemrEcsStack(Stack):
             "deployment_notification_email",
             "live_e2e_run_id",
             "live_e2e_availability_zones",
+            "live_e2e_emulated",
         ]
 
         context = {key: self.node.try_get_context(key) for key in context_keys}
@@ -215,7 +216,7 @@ class OpenemrEcsStack(Stack):
         )
 
         # Create storage infrastructure
-        self.elb_log_bucket = storage.create_elb_log_bucket()
+        self.elb_log_bucket = storage.create_elb_log_bucket(context)
         if is_true(context.get("openemr_import_target")):
             self.import_staging_bucket = storage.create_import_staging_bucket(
                 self.elb_log_bucket,
@@ -400,11 +401,16 @@ class OpenemrEcsStack(Stack):
             ec2.Peer.any_ipv4(), ec2.Port.tcp(443), "Allow HTTPS egress for AWS services and certificate downloads"
         )
 
-        # Create backup plan
-        storage.create_backup_plan(
-            self.db_instance, self.file_system_for_sites_folder, self.file_system_for_ssl_folder, context
-        )
-        self.backup_vault = storage.backup_vault
+        # Floci does not seed the AWS Backup managed IAM policies referenced by
+        # CDK. Omit Backup only when context, explicit Floci opt-in, and a local
+        # emulator endpoint all agree; normal and real-AWS E2E stacks are unchanged.
+        if is_live_e2e_emulated(context):
+            self.backup_vault = None
+        else:
+            storage.create_backup_plan(
+                self.db_instance, self.file_system_for_sites_folder, self.file_system_for_ssl_folder, context
+            )
+            self.backup_vault = storage.backup_vault
 
         # Create ECS cluster (required for OpenEMR)
         ecs_result = compute.create_ecs_cluster(self.vpc, self.db_instance, context, self.region)
@@ -423,6 +429,7 @@ class OpenemrEcsStack(Stack):
             self.container_port,
             self.lambda_python_runtime,
             self.number_of_days_to_regenerate_ssl_materials,
+            context,
         )
         self.efs_only_security_group = security.efs_only_security_group
 

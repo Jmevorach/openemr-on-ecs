@@ -39,7 +39,7 @@ from .nag_suppressions import (
     suppress_lambda_role_common_findings,
     suppress_vpc_endpoint_security_group_findings,
 )
-from .utils import get_ssm_parameter_name, is_true
+from .utils import get_ssm_parameter_name, is_live_e2e_emulated, is_true
 
 
 class SecurityComponents:
@@ -736,7 +736,8 @@ class SecurityComponents:
         container_port: int,
         lambda_python_runtime: _lambda.Runtime,
         number_of_days_to_regenerate_ssl_materials: int,
-    ) -> _lambda.Function:
+        context: Optional[dict] = None,
+    ) -> Optional[_lambda.Function]:
         """Define tasks, lambdas, and schedules that refresh internal TLS materials.
 
         Args:
@@ -749,9 +750,11 @@ class SecurityComponents:
             container_port: Container port
             lambda_python_runtime: Lambda Python runtime
             number_of_days_to_regenerate_ssl_materials: Days between SSL regeneration
+            context: Optional context used to guard local Floci compatibility
 
         Returns:
-            The one-time SSL materials creation Lambda function
+            The one-time SSL materials creation Lambda function, or None for a
+            guarded local Floci synthesis
         """
         # Create generate SSL materials task definition
         create_ssl_materials_task = ecs.FargateTaskDefinition(
@@ -876,6 +879,13 @@ class SecurityComponents:
             schedule=events.Schedule.rate(Duration.days(number_of_days_to_regenerate_ssl_materials)),
             targets=[event_targets.LambdaFunction(create_ssl_materials_lambda)],
         )
+
+        # CDK TriggerFunction's provider speaks HTTPS to the configured AWS
+        # endpoint. Floci exposes HTTP, so omit only this deploy-time trigger;
+        # the task and regular schedule above remain in the emulated template.
+        if is_live_e2e_emulated(context):
+            self.one_time_create_ssl_materials_lambda = None
+            return None
 
         # Create one-time SSL setup Lambda (runs before OpenEMR containers start)
         self.one_time_create_ssl_materials_lambda = triggers.TriggerFunction(

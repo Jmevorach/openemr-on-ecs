@@ -2,7 +2,15 @@
 
 import re
 
-from openemr_ecs.utils import get_resource_suffix, is_true, serverless_cache_name
+import pytest
+
+from openemr_ecs.utils import (
+    get_resource_suffix,
+    is_live_e2e_emulated,
+    is_true,
+    s3_auto_delete_objects,
+    serverless_cache_name,
+)
 
 
 class TestIsTrue:
@@ -48,6 +56,40 @@ class TestGetResourceSuffix:
         """Test that default suffix is returned with empty context."""
         context = {"other_key": "value"}
         assert get_resource_suffix(context) == "default"
+
+
+class TestLiveE2EEmulationGuard:
+    """Tests for the production-CDK Floci boundary."""
+
+    def test_context_alone_cannot_enable_emulation(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.delenv("OPENEMR_FLOCI_E2E", raising=False)
+        monkeypatch.delenv("OPENEMR_AWS_ENDPOINT_URL", raising=False)
+        monkeypatch.delenv("AWS_ENDPOINT_URL", raising=False)
+
+        context = {"live_e2e_emulated": "true"}
+        assert is_live_e2e_emulated(context) is False
+        assert s3_auto_delete_objects(context) is True
+
+    def test_local_endpoint_and_explicit_flag_enable_emulation(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("OPENEMR_FLOCI_E2E", "1")
+        monkeypatch.setenv("OPENEMR_AWS_ENDPOINT_URL", "http://127.0.0.1:4566")
+
+        context = {"live_e2e_emulated": "true"}
+        assert is_live_e2e_emulated(context) is True
+        assert s3_auto_delete_objects(context) is False
+
+    def test_real_aws_endpoint_cannot_enable_emulation(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("OPENEMR_FLOCI_E2E", "1")
+        monkeypatch.setenv("AWS_ENDPOINT_URL", "https://sts.us-east-1.amazonaws.com")
+
+        assert is_live_e2e_emulated({"live_e2e_emulated": "true"}) is False
+
+    @pytest.mark.parametrize("host", ["10.0.0.5", "172.16.0.5", "192.168.1.5", "floci.local"])
+    def test_remote_private_endpoint_cannot_enable_emulation(self, monkeypatch: pytest.MonkeyPatch, host: str):
+        monkeypatch.setenv("OPENEMR_FLOCI_E2E", "1")
+        monkeypatch.setenv("AWS_ENDPOINT_URL", f"http://{host}:4566")
+
+        assert is_live_e2e_emulated({"live_e2e_emulated": "true"}) is False
 
 
 class TestServerlessCacheName:

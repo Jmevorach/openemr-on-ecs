@@ -1,0 +1,10 @@
+# Optional local Floci AWS emulator for live E2E integration tests.
+# Prefer: pytest -m floci (Testcontainers starts Floci automatically).
+services:
+  floci:
+    image: floci/floci:1.6.0@sha256:eab36252ea43a4a73928423f0372219052c5c6f87207f6c4754db14b91d6ed30
+    ports:
+      - "4566:4566"
+    environment:
+      FLOCI_ACCOUNT_ID: "123456789012"
+      FLOCI_DEFAULT_REGION: "us-east-1"

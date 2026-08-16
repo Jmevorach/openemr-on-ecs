@@ -357,11 +357,16 @@ def test_curated_sources_and_commands_match_current_scope() -> None:
     assert "IMPORTING-OPENEMR.md" in knowledge.overview()["primary_guides"]
     assert knowledge.topic("live e2e")["topic"] == "live-e2e"
     assert "LIVE-E2E.md" in knowledge.overview()["primary_guides"]
+    assert knowledge.topic("floci")["topic"] == "floci-emulation"
+    assert "FLOCI.md" in knowledge.overview()["primary_guides"]
+    for source in knowledge.topic("floci")["sources"]:
+        knowledge.read_file(source, max_lines=1)
     for source in knowledge.topic("credential-rotation")["sources"]:
         knowledge.read_file(source, max_lines=1)
     serialized = json.dumps(knowledge.operational_commands()).lower()
     assert "openemr import" in serialized
     assert "live e2e" in serialized
+    assert "floci" in serialized
 
 
 def test_path_traversal_symlink_secrets_encoding_and_size_are_rejected(

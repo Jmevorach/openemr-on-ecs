@@ -1,8 +1,20 @@
 """Shared utility functions for the OpenEMR CDK stack."""
 
 import hashlib
+import os
 import re
 from typing import Optional
+from urllib.parse import urlparse
+
+_FLOCI_FLAG = "OPENEMR_FLOCI_E2E"
+_FLOCI_ENDPOINTS = ("OPENEMR_AWS_ENDPOINT_URL", "AWS_ENDPOINT_URL")
+_LOCAL_FLOCI_HOSTS = {
+    "localhost",
+    "127.0.0.1",
+    "::1",
+    "host.docker.internal",
+    "floci",
+}
 
 _SERVERLESS_CACHE_NAME_MAX = 40
 _SERVERLESS_CACHE_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9-]*$")
@@ -44,6 +56,35 @@ def get_ssm_parameter_name(base_name: str, context: dict) -> str:
     if context.get("live_e2e_run_id"):
         return f"{base_name}_{get_resource_suffix(context)}"
     return base_name
+
+
+def is_live_e2e_emulated(context: Optional[dict] = None) -> bool:
+    """Return True only for an explicitly guarded local Floci synthesis.
+
+    A context value alone is deliberately insufficient: this prevents someone
+    from using ``-c live_e2e_emulated=true`` against real AWS to omit resources.
+    The live-E2E runner must also set its explicit Floci flag and a local AWS
+    endpoint.
+    """
+
+    if not context or not is_true(context.get("live_e2e_emulated")):
+        return False
+    if os.environ.get(_FLOCI_FLAG, "").strip().lower() not in {"1", "true", "yes", "on"}:
+        return False
+    endpoint = next((os.environ.get(name, "").strip() for name in _FLOCI_ENDPOINTS if os.environ.get(name)), "")
+    parsed = urlparse(endpoint)
+    host = (parsed.hostname or "").strip().lower()
+    if parsed.scheme not in {"http", "https"} or not host:
+        return False
+    if "amazonaws.com" in host or host.endswith(".aws"):
+        return False
+    return host in _LOCAL_FLOCI_HOSTS or host.endswith(".localhost")
+
+
+def s3_auto_delete_objects(context: Optional[dict] = None) -> bool:
+    """Disable Lambda-backed S3 deletion only for guarded Floci synthesis."""
+
+    return not is_live_e2e_emulated(context)
 
 
 def serverless_cache_name(stack_name: str, suffix: str) -> str:
