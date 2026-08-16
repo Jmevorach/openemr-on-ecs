@@ -211,7 +211,17 @@ def test_documentation_index_covers_every_claimed_source_and_repository_document
     knowledge = RepositoryKnowledge()
     index = knowledge.documentation_index()
     tracked = subprocess.run(
-        ["git", "ls-files", "-z", "--", "*.md", "*.rst"],
+        [
+            "git",
+            "ls-files",
+            "-z",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+            "--",
+            "*.md",
+            "*.rst",
+        ],
         cwd=knowledge.root,
         check=True,
         capture_output=True,
@@ -246,6 +256,12 @@ def test_documentation_index_fails_closed_on_invalid_sources_and_limits(
     with pytest.raises(KnowledgeError, match="regular file"):
         knowledge.documentation_index()
     fifo.unlink()
+
+    linked = knowledge_root / "docs" / "linked-index.md"
+    linked.symlink_to("../README.md")
+    with pytest.raises(KnowledgeError, match="symlinked"):
+        knowledge.documentation_index()
+    linked.unlink()
 
     long_root = knowledge_root / "docs" / ("a" * 120)
     long_path = long_root
@@ -291,6 +307,17 @@ def test_version_inventory_is_a_bounded_projection_of_authoritative_inventory() 
         assert actual[identifier]["declared"] == declaration.current
         assert actual[identifier]["source_kind"] == declaration.source_kind
     assert actual["container:openemr"]["metadata"]["arm64_digest"].startswith("sha256:")
+    assert {
+        "python:botocore",
+        "python:jmespath",
+        "python:python-dateutil",
+        "python:s3transfer",
+        "python:six",
+        "python:urllib3",
+    } <= actual.keys()
+    assert not any(
+        identifier.startswith("python-invalid:tools/openemr-import-worker/requirements.txt") for identifier in actual
+    )
 
 
 def test_version_inventory_collects_the_validated_snapshot(
@@ -318,17 +345,19 @@ def test_version_inventory_collects_the_validated_snapshot(
     assert all(item["identifier"] != "python:changed-after-validation" for item in components)
 
 
-def test_curated_sources_and_commands_match_pr4_scope() -> None:
+def test_curated_sources_and_commands_match_current_scope() -> None:
     knowledge = RepositoryKnowledge()
 
     assert knowledge.overview()["version"] == "4.1.1"
     assert knowledge.topic("mcp")["topic"] == "knowledge-mcp"
     assert "KNOWLEDGE-MCP.md" in knowledge.topic("knowledge-mcp")["sources"]
     assert "KNOWLEDGE-MCP.md" in knowledge.overview()["primary_guides"]
+    assert knowledge.topic("import")["topic"] == "openemr-import"
+    assert "IMPORTING-OPENEMR.md" in knowledge.overview()["primary_guides"]
     for source in knowledge.topic("credential-rotation")["sources"]:
         knowledge.read_file(source, max_lines=1)
     serialized = json.dumps(knowledge.operational_commands()).lower()
-    assert "import" not in serialized
+    assert "openemr import" in serialized
     assert "live e2e" not in serialized
 
 

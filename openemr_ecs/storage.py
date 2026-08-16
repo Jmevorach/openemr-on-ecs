@@ -50,6 +50,7 @@ class StorageComponents:
         self.efs_volume_configuration_for_sites_folder: Optional[ecs.EfsVolumeConfiguration] = None
         self.efs_volume_configuration_for_ssl_folder: Optional[ecs.EfsVolumeConfiguration] = None
         self.backup_vault: Optional[backup.BackupVault] = None
+        self.import_staging_bucket: Optional[s3.Bucket] = None
 
     def create_elb_log_bucket(self) -> s3.Bucket:
         """Create S3 bucket for Application Load Balancer access logs.
@@ -150,6 +151,121 @@ class StorageComponents:
         self.elb_log_bucket.add_to_resource_policy(policy_statement)
 
         return self.elb_log_bucket
+
+    def create_import_staging_bucket(
+        self,
+        access_log_bucket: s3.IBucket,
+        encryption_key: kms.IKey,
+    ) -> s3.Bucket:
+        """Create a short-lived, private KMS-encrypted import staging bucket."""
+
+        self.import_staging_bucket = s3.Bucket(
+            self.scope,
+            "OpenEMRImportStagingBucket",
+            auto_delete_objects=True,
+            removal_policy=RemovalPolicy.DESTROY,
+            block_public_access=s3.BlockPublicAccess.BLOCK_ALL,
+            encryption=s3.BucketEncryption.KMS,
+            encryption_key=encryption_key,
+            bucket_key_enabled=True,
+            enforce_ssl=True,
+            versioned=True,
+            server_access_logs_bucket=access_log_bucket,
+            server_access_logs_prefix="import-staging-access/",
+            lifecycle_rules=[
+                s3.LifecycleRule(
+                    id="ExpireImportEvidence",
+                    enabled=True,
+                    prefix="migrations/",
+                    expiration=Duration.days(30),
+                    noncurrent_version_expiration=Duration.days(30),
+                    abort_incomplete_multipart_upload_after=Duration.days(1),
+                ),
+                s3.LifecycleRule(
+                    id="ExpireImportSource",
+                    enabled=True,
+                    tag_filters={"DataClass": "ImportSource"},
+                    expiration=Duration.days(1),
+                    noncurrent_version_expiration=Duration.days(1),
+                ),
+                s3.LifecycleRule(
+                    id="CleanImportLockHistory",
+                    enabled=True,
+                    prefix="locks/",
+                    noncurrent_version_expiration=Duration.days(30),
+                    expired_object_delete_marker=True,
+                ),
+            ],
+        )
+        self.import_staging_bucket.add_to_resource_policy(
+            iam.PolicyStatement(
+                sid="DenyImportObjectsWithoutExplicitKmsEncryption",
+                effect=iam.Effect.DENY,
+                principals=[iam.AnyPrincipal()],
+                actions=["s3:PutObject"],
+                resources=[self.import_staging_bucket.arn_for_objects("*")],
+                conditions={
+                    "StringNotEquals": {
+                        "s3:x-amz-server-side-encryption": "aws:kms",
+                    }
+                },
+            )
+        )
+        self.import_staging_bucket.add_to_resource_policy(
+            iam.PolicyStatement(
+                sid="DenyImportObjectsEncryptedWithAnotherKey",
+                effect=iam.Effect.DENY,
+                principals=[iam.AnyPrincipal()],
+                actions=["s3:PutObject"],
+                resources=[self.import_staging_bucket.arn_for_objects("*")],
+                conditions={
+                    "StringNotEquals": {
+                        "s3:x-amz-server-side-encryption-aws-kms-key-id": encryption_key.key_arn,
+                    }
+                },
+            )
+        )
+        acknowledge_findings(
+            self.import_staging_bucket,
+            [
+                {
+                    "id": "HIPAA.Security-S3BucketReplicationEnabled",
+                    "reason": (
+                        "Import objects are temporary, encrypted staging data with a one-day "
+                        "lifecycle; durable copies remain in the source and verified backups"
+                    ),
+                }
+            ],
+        )
+        return self.import_staging_bucket
+
+    def create_import_efs_volume_configuration(
+        self,
+        file_system: efs.FileSystem,
+    ) -> tuple[ecs.EfsVolumeConfiguration, efs.AccessPoint]:
+        """Create an import-only access point that can atomically swap site data."""
+
+        access_point = efs.AccessPoint(
+            self.scope,
+            "OpenEMRImportSitesAccessPoint",
+            file_system=file_system,
+            path="/",
+            # Root is required to atomically exchange the /default sibling,
+            # while gid 101 keeps normalized 0660/0770 content writable by
+            # the OpenEMR application process.
+            posix_user=efs.PosixUser(uid="0", gid="101"),
+        )
+        return (
+            ecs.EfsVolumeConfiguration(
+                file_system_id=file_system.file_system_id,
+                transit_encryption="ENABLED",
+                authorization_config=ecs.AuthorizationConfig(
+                    access_point_id=access_point.access_point_id,
+                    iam="ENABLED",
+                ),
+            ),
+            access_point,
+        )
 
     def create_cloudtrail_logging(self, region: str) -> tuple:
         """Create CloudTrail logging infrastructure (optional).

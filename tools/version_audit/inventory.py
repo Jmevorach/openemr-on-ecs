@@ -207,7 +207,31 @@ def _requirement_lines(
     if path in seen:
         return
     seen.add(path)
-    for line_number, raw_line in enumerate(source.read_text(path).splitlines(), start=1):
+    logical_lines: list[tuple[int, str]] = []
+    continuation: list[str] = []
+    continuation_start = 0
+    for line_number, physical_line in enumerate(
+        source.read_text(path).splitlines(),
+        start=1,
+    ):
+        stripped_physical = physical_line.strip()
+        continues = stripped_physical.endswith("\\")
+        fragment = stripped_physical[:-1].rstrip() if continues else stripped_physical
+        if continuation or continues:
+            if not continuation:
+                continuation_start = line_number
+            continuation.append(fragment)
+            if continues:
+                continue
+            logical_lines.append((continuation_start, " ".join(continuation)))
+            continuation = []
+            continuation_start = 0
+            continue
+        logical_lines.append((line_number, physical_line))
+    if continuation:
+        logical_lines.append((continuation_start, " ".join(continuation) + " \\"))
+
+    for line_number, raw_line in logical_lines:
         stripped = raw_line.strip()
         if not stripped or stripped.startswith("#"):
             continue
@@ -239,6 +263,8 @@ def collect_python_declarations(
         root / "requirements.txt",
         root / "requirements-dev.txt",
         root / "tools" / "credential-rotation" / "requirements.txt",
+        root / "tools" / "openemr-import-worker" / "requirements.in",
+        root / "tools" / "openemr-import-worker" / "requirements.txt",
     ]
     grouped: dict[str, list[tuple[Path, int, Requirement, str]]] = defaultdict(list)
     malformed: list[Declaration] = []
@@ -250,6 +276,7 @@ def collect_python_declarations(
             source=source,
         ):
             line = raw_line.split(" #", 1)[0].strip()
+            line = re.sub(r"\s+--hash=\S+", "", line).strip()
             if line.startswith("-e "):
                 line = line[3:].strip()
             if line.startswith(("--", "-f ", "--find-links ")):

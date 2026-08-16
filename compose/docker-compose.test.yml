@@ -1,7 +1,8 @@
 services:
   # Simulate the ECS container startup for testing
   openemr-test:
-    image: openemr/openemr:8.2.0
+    image: openemr/openemr:8.2.0@sha256:c14720d5ef13ba10142d16400375ad25af3e7f6bfa5e0ef4ea3a4417b46f1d51
+    platform: linux/arm64
     container_name: openemr-container-test
     # Exact copy of startup script from compute.py - matches production ECS deployment
     command:
@@ -9,7 +10,6 @@ services:
       - -c
       - |
         set -e
-        set -x
         log() { echo "[$$(date +%Y-%m-%d\ %H:%M:%S)] $$*"; }
         log "=== OpenEMR Container Startup Script ==="
         log "Starting container initialization..."
@@ -148,6 +148,13 @@ services:
         fi
         chmod +x ./openemr.sh || { log "ERROR: Failed to make openemr.sh executable"; exit 1; }
         log "openemr.sh is executable"
+        for httpd_conf in /etc/apache2/httpd.conf /etc/httpd/conf/httpd.conf; do
+          if [ -f "$$httpd_conf" ] && ! grep -qE '^[[:space:]]*Mutex[[:space:]]' "$$httpd_conf"; then
+            printf '\n# QEMU user emulation cannot create Apache'\''s default accept mutex.\nMutex posixsem\n' >> "$$httpd_conf"
+            log "Configured Apache Mutex posixsem for emulated ARM64"
+            break
+          fi
+        done
         if ! grep -q "httpd -k graceful" /etc/crontabs/root 2>/dev/null; then
           echo "1 23  *   *   *   httpd -k graceful" >> /etc/crontabs/root
           log "Added Apache graceful restart cron job"
@@ -184,16 +191,22 @@ services:
           for attempt in $$(seq 1 $$MAX_ATTEMPTS); do
             # Use mysqladmin ping if available, otherwise fall back to nc (netcat)
             if command -v mysqladmin >/dev/null 2>&1; then
-              MYSQLADMIN_CMD="mysqladmin ping -h \"$$MYSQL_HOST\" -u \"$$MYSQL_ROOT_USER\" -p\"$$MYSQL_ROOT_PASS\""
-              # Always use TLS for DB connections (matches production)
+              # MariaDB's mysqladmin uses --ssl instead of MySQL's --ssl-mode=REQUIRED
               if [ -n "$$MYSQL_CA_PATH" ] && [ -f "$$MYSQL_CA_PATH" ]; then
-                MYSQLADMIN_CMD="$$MYSQLADMIN_CMD --ssl-ca=\"$$MYSQL_CA_PATH\" --ssl-mode=REQUIRED"
+                if MYSQL_PWD="$$MYSQL_ROOT_PASS" mysqladmin ping \
+                  -h "$$MYSQL_HOST" -u "$$MYSQL_ROOT_USER" \
+                  --ssl --ssl-ca="$$MYSQL_CA_PATH" --silent 2>/dev/null; then
+                  DB_READY=1
+                fi
               else
-                MYSQLADMIN_CMD="$$MYSQLADMIN_CMD --ssl-mode=REQUIRED"
+                if MYSQL_PWD="$$MYSQL_ROOT_PASS" mysqladmin ping \
+                  -h "$$MYSQL_HOST" -u "$$MYSQL_ROOT_USER" \
+                  --ssl --silent 2>/dev/null; then
+                  DB_READY=1
+                fi
               fi
-              if eval "$$MYSQLADMIN_CMD" --silent 2>/dev/null; then
+              if [ "$$DB_READY" -eq 1 ]; then
                 log "Database connectivity verified (attempt $$attempt/$$MAX_ATTEMPTS)"
-                DB_READY=1
                 break
               fi
             elif command -v nc >/dev/null 2>&1 && [ -n "$$MYSQL_PORT" ]; then

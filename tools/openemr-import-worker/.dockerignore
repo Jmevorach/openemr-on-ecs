@@ -1,0 +1,7 @@
+**
+!Dockerfile
+!requirements.txt
+!worker.py
+!fresh-seed-manifest.json
+!ci_prepare_mysql_fixtures.py
+!ci_live_mysql_import.py

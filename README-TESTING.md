@@ -191,12 +191,12 @@ ls -la /root/certs/redis/
 ## Comparing with ECS
 
 The local test environment uses:
-- Same Docker image tag: `openemr/openemr:8.2.0`
+- Same Docker image tag and reviewed ARM64 digest: `openemr/openemr:8.2.0@sha256:c14720d5ef13ba10142d16400375ad25af3e7f6bfa5e0ef4ea3a4417b46f1d51`
 - Same startup command from `compute.py`
 - Same environment variable structure
 
 Differences:
-- Production pins the ARM64 image digest in addition to the release tag
+- Local Compose also pins `platform: linux/arm64` so the mutable `8.2.0` tag cannot drift away from the reviewed seed baseline
 - Local MySQL instead of RDS Aurora
 - No EFS volumes (uses container volumes)
 - No AWS Secrets Manager (uses environment variables)

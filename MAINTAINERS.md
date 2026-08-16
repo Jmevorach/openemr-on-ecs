@@ -126,13 +126,16 @@ Run formatting, linting, typing, and static security checks:
 .venv/bin/isort --check-only app.py openemr_ecs tests diagrams tools \
   scripts/check_npm_audit.py scripts/test-cdk-synthesis.py
 .venv/bin/mypy app.py openemr_ecs diagrams tools/_shared.py \
-  tools/version_audit tools/credential-rotation/src \
+  tools/version_audit tools/openemr_import \
+  tools/openemr-import-worker/worker.py tools/credential-rotation/src \
   scripts/check_npm_audit.py scripts/test-cdk-synthesis.py
 .venv/bin/bandit -r app.py openemr_ecs diagrams tools \
   scripts/check_npm_audit.py scripts/test-cdk-synthesis.py -ll
 .venv/bin/pip-audit --strict --progress-spinner off \
   -r requirements.txt -r requirements-dev.txt \
   -r tools/credential-rotation/requirements.txt
+.venv/bin/pip-audit --strict --progress-spinner off \
+  -r tools/openemr-import-worker/requirements.txt
 .venv/bin/python scripts/check_npm_audit.py
 .venv/bin/pre-commit run
 ```

@@ -5,6 +5,7 @@ from typing import Optional
 from aws_cdk import (
     Duration,
     RemovalPolicy,
+    Stack,
 )
 from aws_cdk import aws_ec2 as ec2
 from aws_cdk import aws_ecr_assets as ecr_assets
@@ -1079,3 +1080,164 @@ class ComputeComponents:
         rotation_task_definition.node.add_dependency(ecs_task_sec_group)
 
         return rotation_task_definition
+
+    def create_openemr_import_task(
+        self,
+        log_group: logs.LogGroup,
+        efs_volume_configuration_for_sites_folder: ecs.EfsVolumeConfiguration,
+        sites_efs: efs.FileSystem,
+        import_access_point: efs.AccessPoint,
+        db_secret: secretsmanager.Secret,
+        staging_bucket: s3.Bucket,
+        openemr_version: str,
+    ) -> ecs.FargateTaskDefinition:
+        """Create a dormant one-off task definition for guarded imports."""
+
+        staging_key = staging_bucket.encryption_key
+        if staging_key is None:
+            raise RuntimeError("Import staging bucket requires a customer-managed encryption key")
+        import_task_definition = ecs.FargateTaskDefinition(
+            self.scope,
+            "OpenEMRImportTaskDefinition",
+            cpu=1024,
+            memory_limit_mib=2048,
+            ephemeral_storage_gib=50,
+            runtime_platform=ecs.RuntimePlatform(cpu_architecture=ecs.CpuArchitecture.ARM64),
+        )
+        import_task_definition.add_volume(
+            name="SitesFolderVolume",
+            efs_volume_configuration=efs_volume_configuration_for_sites_folder,
+        )
+        import_container = import_task_definition.add_container(
+            "OpenEMRImportContainer",
+            logging=ecs.LogDriver.aws_logs(
+                stream_prefix="ecs/openemr-import",
+                log_group=log_group,
+            ),
+            essential=True,
+            container_name="openemr-import",
+            image=ecs.ContainerImage.from_asset(
+                "tools/openemr-import-worker",
+                platform=ecr_assets.Platform.LINUX_ARM64,
+            ),
+            environment={
+                "IMPORT_STAGING_BUCKET": staging_bucket.bucket_name,
+                "IMPORT_STAGING_BUCKET_OWNER": Stack.of(self.scope).account,
+                "IMPORT_STAGING_KMS_KEY_ARN": staging_key.key_arn,
+                "MYSQL_DATABASE": "openemr",
+                "MYSQL_SSL_CA": "/etc/ssl/certs/aws-rds-global.pem",
+                "OPENEMR_SITES_MOUNT_ROOT": "/mnt/openemr-sites",
+                "TARGET_OPENEMR_VERSION": openemr_version,
+            },
+            secrets={
+                "MYSQL_HOST": ecs.Secret.from_secrets_manager(db_secret, "host"),
+                "MYSQL_PORT": ecs.Secret.from_secrets_manager(db_secret, "port"),
+                "MYSQL_USERNAME": ecs.Secret.from_secrets_manager(db_secret, "username"),
+                "MYSQL_PASSWORD": ecs.Secret.from_secrets_manager(db_secret, "password"),
+            },
+        )
+        import_container.add_mount_points(
+            ecs.MountPoint(
+                container_path="/mnt/openemr-sites",
+                read_only=False,
+                source_volume="SitesFolderVolume",
+            )
+        )
+        import_task_definition.task_role.add_to_principal_policy(
+            iam.PolicyStatement(
+                actions=["s3:GetObject", "s3:GetObjectVersion"],
+                resources=[staging_bucket.arn_for_objects("migrations/*/source.tar")],
+            )
+        )
+        import_task_definition.task_role.add_to_principal_policy(
+            iam.PolicyStatement(
+                actions=["s3:PutObject"],
+                resources=[staging_bucket.arn_for_objects("migrations/*/status.json")],
+            )
+        )
+        import_task_definition.task_role.add_to_principal_policy(
+            iam.PolicyStatement(
+                actions=[
+                    "kms:Decrypt",
+                    "kms:DescribeKey",
+                    "kms:Encrypt",
+                    "kms:GenerateDataKey",
+                ],
+                resources=[staging_key.key_arn],
+            )
+        )
+        import_task_definition.task_role.add_to_principal_policy(
+            iam.PolicyStatement(
+                actions=[
+                    "elasticfilesystem:ClientMount",
+                    "elasticfilesystem:ClientRootAccess",
+                    "elasticfilesystem:ClientWrite",
+                ],
+                resources=[sites_efs.file_system_arn],
+                conditions={
+                    "StringEquals": {
+                        "elasticfilesystem:AccessPointArn": import_access_point.access_point_arn,
+                    }
+                },
+            )
+        )
+        staging_bucket_resource = staging_bucket.node.default_child
+        if not isinstance(staging_bucket_resource, s3.CfnBucket):
+            raise RuntimeError("Import staging bucket requires an L1 bucket resource")
+        staging_bucket_logical_id = Stack.of(self.scope).get_logical_id(staging_bucket_resource)
+        acknowledge_findings(
+            import_task_definition.task_role,  # type: ignore[arg-type]
+            [
+                {
+                    "id": "HIPAA.Security-IAMNoInlinePolicy",
+                    "reason": (
+                        "The one-off import task needs an inline policy scoped to its "
+                        "temporary KMS-encrypted staging bucket"
+                    ),
+                },
+                {
+                    "id": "AwsSolutions-IAM5",
+                    "reason": (
+                        "The migration identifier is selected at runtime, so source and "
+                        "status permissions use a wildcard only in that path segment"
+                    ),
+                    "appliesTo": [
+                        f"Resource::<{staging_bucket_logical_id}.Arn>/migrations/*/source.tar",
+                        f"Resource::<{staging_bucket_logical_id}.Arn>/migrations/*/status.json",
+                    ],
+                },
+            ],
+        )
+        acknowledge_findings(
+            import_task_definition,
+            [
+                {
+                    "id": "AwsSolutions-ECS2",
+                    "reason": (
+                        "Environment values contain only resource names, paths, and a "
+                        "public application version; database credentials use ECS secrets"
+                    ),
+                }
+            ],
+        )
+        import_execution_role = import_task_definition.execution_role
+        if import_execution_role is None:
+            raise RuntimeError("OpenEMR import task requires an execution role")
+        acknowledge_findings(
+            import_execution_role,  # type: ignore[arg-type]
+            [
+                {
+                    "id": "AwsSolutions-IAM5",
+                    "reason": (
+                        "The CDK-generated ECS execution role requires wildcard ECR "
+                        "authorization and CloudWatch Logs delivery permissions"
+                    ),
+                    "appliesTo": ["Resource::*"],
+                },
+                {
+                    "id": "HIPAA.Security-IAMNoInlinePolicy",
+                    "reason": ("CDK generates an inline execution policy for image, log, and Secrets Manager access"),
+                },
+            ],
+        )
+        return import_task_definition

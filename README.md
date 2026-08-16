@@ -341,6 +341,7 @@ Before starting, you'll need:
 ├── GETTING-STARTED.md                       # Beginner-friendly setup guide
 ├── README-TESTING.md                        # Local testing guide
 ├── BACKUP-RESTORE-GUIDE.md                  # Backup and restore procedures
+├── IMPORTING-OPENEMR.md                     # Guarded fresh-target import workflow
 ├── KNOWLEDGE-MCP.md                          # Read-only repository MCP setup and safety
 ├── MAINTAINERS.md                            # Audit, MCP, and validation guide
 ├── DETAILS.md                               # Deep configuration details
@@ -586,6 +587,7 @@ validation commands, generated artifacts, and safe maintenance boundaries.
 - [REST and FHIR APIs](DETAILS.md#rest-and-fhir-apis) - Step-by-step guide to enabling and using OpenEMR's REST and FHIR APIs for integration
 - [AWS Backup Configuration](DETAILS.md#how-aws-backup-is-used-in-this-architecture) - Automated backup strategy with daily, weekly, and monthly backups with 7-year retention
 - [Backup and Restore Guide](BACKUP-RESTORE-GUIDE.md) - Comprehensive guide for restoring from AWS Backup recovery points
+- [Importing an Existing OpenEMR Installation](IMPORTING-OPENEMR.md) - Offline inspection, deterministic planning, and guarded fresh-target execution
 - [Database Access via ECS Exec](DETAILS.md#using-ecs-exec) - Secure database access using ECS Exec and port forwarding for remote database management
 - [Aurora ML for AWS Bedrock](DETAILS.md#aurora-ml-for-aws-bedrock) - Integration guide for using AWS Bedrock foundation models directly from MySQL queries
 - [AWS Global Accelerator](DETAILS.md#using-aws-global-accelerator) - Performance optimization for global deployments using AWS Global Accelerator
