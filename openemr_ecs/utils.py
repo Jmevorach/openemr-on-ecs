@@ -1,6 +1,8 @@
 """Shared utility functions for the OpenEMR CDK stack."""
 
+import hashlib
 import os
+import re
 from typing import Optional
 from urllib.parse import urlparse
 
@@ -13,6 +15,9 @@ _LOCAL_FLOCI_HOSTS = {
     "host.docker.internal",
     "floci",
 }
+
+_SERVERLESS_CACHE_NAME_MAX = 40
+_SERVERLESS_CACHE_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9-]*$")
 
 
 def is_true(val: Optional[str]) -> bool:
@@ -80,3 +85,25 @@ def s3_auto_delete_objects(context: Optional[dict] = None) -> bool:
     """Disable Lambda-backed S3 deletion only for guarded Floci synthesis."""
 
     return not is_live_e2e_emulated(context)
+
+
+def serverless_cache_name(stack_name: str, suffix: str) -> str:
+    """Build a valid Valkey name without renaming existing valid caches.
+
+    The historical name is retained whenever it already satisfies
+    ElastiCache's 40-character limit. Only over-limit or invalid names use a
+    deterministic shortened form.
+    """
+
+    legacy_name = f"{stack_name.lower()[:20]}-{suffix}-valkey"
+    if len(legacy_name) <= _SERVERLESS_CACHE_NAME_MAX and _SERVERLESS_CACHE_NAME_RE.fullmatch(legacy_name):
+        return legacy_name
+
+    readable = re.sub(r"[^a-z0-9-]", "", f"{stack_name}-{suffix}".lower()).strip("-")
+    if not readable or not readable[0].isalpha():
+        readable = f"openemr-{readable}".strip("-")
+    digest_input = f"{stack_name}\0{suffix}".encode("utf-8")
+    digest = hashlib.sha256(digest_input).hexdigest()[:8]
+    trailer = f"-{digest}-valkey"
+    prefix = readable[: _SERVERLESS_CACHE_NAME_MAX - len(trailer)].rstrip("-") or "openemr"
+    return f"{prefix}{trailer}"

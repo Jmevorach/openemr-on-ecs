@@ -297,6 +297,14 @@ def test_fresh_target_check_rejects_modified_seed_configuration(
         worker._assert_empty_target("8.2.0", 541)
 
 
+def test_seed_manifest_excludes_nondeterministic_globals_values() -> None:
+    worker = _worker()
+    baseline = worker.FRESH_SEED_BASELINE["globals"]
+
+    assert baseline.get("exclude_columns") == ["gl_value"]
+    assert isinstance(baseline.get("sha256"), str)
+
+
 def test_seed_manifest_limits_unfingerprinted_tables_to_bootstrap_identity() -> None:
     worker = _worker()
 

@@ -43,8 +43,10 @@ single-`default`-site import into a stack explicitly deployed with
 `openemr_import_target=true`. Every table outside the reviewed OpenEMR 8.2
 seed/configuration set must be empty. Seed tables must match exact row counts
 and deterministic content fingerprints from the checked-in 8.2 baseline;
-runtime timestamp columns are normalized, while credential-derived bootstrap
-identity tables use exact counts because their values vary with the generated
+runtime timestamp columns are normalized, `globals.gl_value` is excluded
+because first-boot writes a generated installation UUID and other
+non-deterministic setting values, and credential-derived bootstrap identity
+tables use exact counts because their values vary with the generated
 administrator. Inspection supports explicit SQL/site directories and manifest
 bundles, but those adapters are not executable in the first release.
 The planner reads the target from the deployment's authoritative
