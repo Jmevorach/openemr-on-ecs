@@ -75,7 +75,7 @@ After confirming a restore, the TUI polls AWS Backup every 5 seconds and display
 
 ### Prerequisites
 
-- Go 1.26 or later
+- Go 1.27 or later
 - AWS credentials configured (via `aws configure`, environment variables, or AWS profile)
 - Deployed OpenEMR stack with AWS Backup configured
 

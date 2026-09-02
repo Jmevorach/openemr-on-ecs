@@ -25,9 +25,7 @@ from aws_cdk import aws_ses as ses
 from aws_cdk import aws_ses_actions as ses_actions
 from aws_cdk import aws_ssm as ssm
 from aws_cdk import aws_wafv2 as wafv2
-from aws_cdk import (
-    triggers,
-)
+from aws_cdk import triggers
 from constructs import Construct
 
 from .assets import python_lambda_code

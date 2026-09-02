@@ -348,8 +348,9 @@ def test_version_inventory_collects_the_validated_snapshot(
 
 def test_curated_sources_and_commands_match_current_scope() -> None:
     knowledge = RepositoryKnowledge()
+    declared_version = (Path(__file__).resolve().parents[2] / "VERSION").read_text(encoding="utf-8").strip()
 
-    assert knowledge.overview()["version"] == "4.1.1"
+    assert knowledge.overview()["version"] == declared_version
     assert knowledge.topic("mcp")["topic"] == "knowledge-mcp"
     assert "KNOWLEDGE-MCP.md" in knowledge.topic("knowledge-mcp")["sources"]
     assert "KNOWLEDGE-MCP.md" in knowledge.overview()["primary_guides"]
@@ -683,6 +684,6 @@ def test_stdio_server_startup_and_protocol_smoke() -> None:
                 "search_repository",
             }
             assert overview.is_error is False
-            assert overview.data["version"] == "4.1.1"
+            assert overview.data["version"] == (repository / "VERSION").read_text(encoding="utf-8").strip()
 
     asyncio.run(asyncio.wait_for(exercise_stdio_server(), timeout=15))

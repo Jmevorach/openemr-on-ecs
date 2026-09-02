@@ -1773,6 +1773,79 @@ def test_tagged_resource_discovery_rejects_run_tag_outside_owned_stack() -> None
         adapter.assert_run_id_available(run_id)
 
 
+def _untagged_by_deletion_mapping(arn: str, run_id: str) -> dict[str, Any]:
+    """CloudFormation drops its own tags once the owning stack is deleted."""
+
+    return {"ResourceARN": arn, "Tags": [{"Key": "LiveE2ERunId", "Value": run_id}]}
+
+
+def test_post_deletion_discovery_tolerates_stack_tag_dropped_by_deletion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_id = "e2e-stack-tag-gone"
+    kms_arn = "arn:aws:kms:us-east-1:123456789012:key/085198d5-1cd7-4049-914b-ac4a6cf14ade"
+
+    class Tagging:
+        def get_paginator(self, name: str) -> Any:
+            assert name == "get_resources"
+
+            class Paginator:
+                def paginate(self, **_: Any) -> Any:
+                    yield {"ResourceTagMappingList": [_untagged_by_deletion_mapping(kms_arn, run_id)]}
+
+            return Paginator()
+
+    class KMS:
+        def describe_key(self, **_: Any) -> dict[str, Any]:
+            return {"KeyMetadata": {"KeyState": "PendingDeletion"}}
+
+    class Session:
+        def client(self, service: str, **_: Any) -> Any:
+            return {"resourcegroupstaggingapi": Tagging(), "kms": KMS()}[service]
+
+    adapter = LiveE2EAws(region="us-east-1", session=Session())
+    monkeypatch.setattr("tools.live_e2e.aws.time.sleep", lambda _: None)
+
+    passes = adapter.cleanup_owned_tagged_resources(run_id, timeout_seconds=5, poll_seconds=0.01)
+    residuals = adapter.residual_resources(run_id)
+
+    assert passes == 0
+    assert [r.disposition for r in residuals] == ["scheduled-deletion-expected"]
+
+
+def test_post_deletion_discovery_still_rejects_a_foreign_stack_tag() -> None:
+    run_id = "e2e-foreign-stack"
+
+    class Tagging:
+        def get_paginator(self, name: str) -> Any:
+            assert name == "get_resources"
+
+            class Paginator:
+                def paginate(self, **_: Any) -> Any:
+                    yield {
+                        "ResourceTagMappingList": [
+                            {
+                                "ResourceARN": "arn:aws:ec2:us-east-1:123456789012:vpc/vpc-unrelated",
+                                "Tags": [
+                                    {"Key": "LiveE2ERunId", "Value": run_id},
+                                    {"Key": "aws:cloudformation:stack-name", "Value": "UnrelatedStack"},
+                                ],
+                            }
+                        ]
+                    }
+
+            return Paginator()
+
+    class Session:
+        def client(self, service: str, **_: Any) -> Any:
+            assert service == "resourcegroupstaggingapi"
+            return Tagging()
+
+    adapter = LiveE2EAws(region="us-east-1", session=Session())
+    with pytest.raises(ToolError, match="outside the owned"):
+        adapter.residual_resources(run_id)
+
+
 def test_tagged_orphan_sweep_ignores_task_definition_already_deleting(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

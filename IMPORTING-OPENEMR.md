@@ -378,6 +378,16 @@ OPENEMR_IMPORT_MYSQL_INTEGRATION=1 pytest -m integration tests/tools/test_openem
 ./scripts/ci-import-worker-mysql.sh
 ```
 
+The `import-worker-seed-manifest` job runs
+`scripts/update-seed-manifest.sh --check`, which recomputes the fresh-seed
+manifest from the compose-pinned OpenEMR image and fails when the checked-in
+manifest drifts from it. After an intentional OpenEMR baseline upgrade,
+regenerate the manifest locally and commit the result:
+
+```bash
+./scripts/update-seed-manifest.sh
+```
+
 ## Security notes
 
 - Run inspection on an encrypted local volume with restrictive permissions.

@@ -24,7 +24,7 @@ ENTRYPOINT ["python", "/app/worker.py"]
 
 FROM base AS ci
 USER root
-COPY ci_prepare_mysql_fixtures.py ci_live_mysql_import.py .
+COPY ci_prepare_mysql_fixtures.py ci_live_mysql_import.py ci_update_seed_manifest.py .
 USER importer
 
 FROM base AS production

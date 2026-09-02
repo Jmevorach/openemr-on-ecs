@@ -6,7 +6,7 @@
 
 [![License: MIT](https://img.shields.io/github/license/openemr/openemr-on-ecs?style=flat&color=yellow)](LICENSE)
 [![Version](https://img.shields.io/github/v/release/openemr/openemr-on-ecs?style=flat&label=version&color=blue)](https://github.com/openemr/openemr-on-ecs/releases)
-[![OpenEMR](https://img.shields.io/badge/OpenEMR-v8.2.0-2ea44f?style=flat)](https://hub.docker.com/r/openemr/openemr/tags)
+[![OpenEMR](https://img.shields.io/badge/OpenEMR-v8.3.0-2ea44f?style=flat)](https://hub.docker.com/r/openemr/openemr/tags)
 
 <table>
 <tr><td><b>Tests</b></td><td>
@@ -34,7 +34,7 @@
 </td></tr>
 <tr><td><b>Stack</b></td><td>
   <img src="https://img.shields.io/badge/Python-3.14-3776AB?style=flat&logo=python&logoColor=white" alt="Python">
-  <img src="https://img.shields.io/badge/Go-1.26-00ADD8?style=flat&logo=go&logoColor=white" alt="Go">
+  <img src="https://img.shields.io/badge/Go-1.27-00ADD8?style=flat&logo=go&logoColor=white" alt="Go">
   <img src="https://img.shields.io/badge/AWS_CDK-v2-FF9900?style=flat&logo=amazonaws&logoColor=white" alt="AWS CDK">
   <img src="https://img.shields.io/badge/Fargate-serverless-FF9900?style=flat&logo=awsfargate&logoColor=white" alt="Fargate">
   <img src="https://img.shields.io/badge/Aurora-MySQL-4479A1?style=flat&logo=mysql&logoColor=white" alt="Aurora MySQL">

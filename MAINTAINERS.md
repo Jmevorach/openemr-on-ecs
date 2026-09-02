@@ -7,7 +7,7 @@ the commands in the first sections do not deploy infrastructure.
 
 - Python 3.14 for the application and all Python checks, including `cfn-lint`
 - Node.js 24
-- Go 1.26 for `scripts/backup-tui`
+- Go 1.27 for `scripts/backup-tui`
 - AWS CDK v2 CLI
 - Docker with Buildx for local container validation
 
@@ -143,11 +143,9 @@ Run formatting, linting, typing, and static security checks:
 Run the final command after staging the intended changes; restage any safe
 formatter updates before committing.
 
-The npm check fails closed except for the exact bundled `brace-expansion`
-advisory and package path recorded in `scripts/check_npm_audit.py`. That
-temporary deferral expires on 2026-08-26. Remove it as soon as `aws-cdk-lib`
-ships the corrected bundled dependency; do not update the lockfile version
-without updating the installed package.
+The npm check in `scripts/check_npm_audit.py` fails closed on any reported
+vulnerability. Update lockfiles with the native package manager and never
+update the lockfile version without updating the installed package.
 
 Validate the credential-rotation tool separately:
 
@@ -191,9 +189,13 @@ For each proposed dependency, platform, container, or action upgrade:
    constraints, CDK CLI/library behavior, and Go directives.
 3. Pin GitHub Actions to immutable commit SHAs with a version comment.
 4. Update lockfiles using the native package manager.
-5. Run focused tests, then the broad local validation relevant to the change.
-6. Review synthesized CloudFormation changes and new `cdk-nag` findings.
-7. Document a justified deferral instead of applying an unsafe upgrade.
+5. When the OpenEMR container baseline changes, regenerate
+   `tools/openemr-import-worker/fresh-seed-manifest.json` with
+   `scripts/update-seed-manifest.sh` and review the row-count and fingerprint
+   diff.
+6. Run focused tests, then the broad local validation relevant to the change.
+7. Review synthesized CloudFormation changes and new `cdk-nag` findings.
+8. Document a justified deferral instead of applying an unsafe upgrade.
 
 ## Release and CI
 
