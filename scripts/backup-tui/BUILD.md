@@ -48,7 +48,7 @@ make build
 
 ## Requirements
 
-- Go 1.26 or later
+- Go 1.27 or later
 - AWS credentials configured
 - Make (optional, for using Makefile)
 

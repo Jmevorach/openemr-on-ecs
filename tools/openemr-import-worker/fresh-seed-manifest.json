@@ -1,5 +1,5 @@
 {
-  "openemr_version": "8.2.0",
+  "openemr_version": "8.3.0",
   "database_version": 541,
   "tables": {
     "automatic_notification": {"rows": 2, "sha256": "37429d32a026a2c39682ab8fe1889b7b4b35ed439aedf2e905d85b62aeaf3d78"},
@@ -38,7 +38,7 @@
     "gacl_aro_seq": {"rows": 1, "sha256": "25d4f2a86deb5e2574bb3210b67bb24fcc4afb19f93a7b65a057daa874a9d18e"},
     "gacl_groups_aro_map": {"rows": 2, "sha256": "c448d1307aa54c8f99f66fc26447d8b82595c47045445be3acb9bbc92d8f8258"},
     "gacl_phpgacl": {"rows": 2, "sha256": "4a6fa12deabe69847a3cc22241632748db40038aaa86aae84ceec829eb32a015"},
-    "globals": {"rows": 490, "sha256": "3f654c13a193136bdcd0efbc0d4f9155616b05bced967b6416654bd7613ea231", "exclude_columns": ["gl_value"]},
+    "globals": {"rows": 487, "sha256": "279f33c3138e3eea9f0b8cb9673f7454a274d1e2777c902034b51cd33bd783b1", "exclude_columns": ["gl_value"]},
     "groups": {"rows": 1, "sha256": null},
     "insurance_type_codes": {"rows": 26, "sha256": "1c9143e683e9d40a97519a8dce89b0d4fa9699a065a485b360e51270716263ad"},
     "issue_types": {"rows": 13, "sha256": "904cd0e314f5e21590877ad7a4f86805456cd992d553ab0e1b27c75f1fde1a0a"},
@@ -69,6 +69,6 @@
     "user_settings": {"rows": 19, "sha256": "afe581e3244de1c2194958e50c1a042e0c280fed8785d00da0ead460c1f8b877"},
     "users": {"rows": 4, "sha256": null},
     "users_secure": {"rows": 1, "sha256": null},
-    "version": {"rows": 1, "sha256": "293ec8b784f0abb296e02bec42a1afd5d59ee9e892a7ea9e13d9490033b76948"}
+    "version": {"rows": 1, "sha256": "d691ab19b5c6dc91563caca5403bf98c48281354a01c1832df6a220c69f2e3ab"}
   }
 }

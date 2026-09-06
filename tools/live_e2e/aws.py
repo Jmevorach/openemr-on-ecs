@@ -1083,7 +1083,7 @@ class LiveE2EAws:
         """Inventory taggable resources left after deletion and classify delayed deletions."""
 
         residuals: list[ResidualResource] = []
-        for arn in self._tagged_resource_arns(run_id):
+        for arn in self._tagged_resource_arns(run_id, require_stack_tag=False):
             service = _arn_service(arn)
             if self._is_expected_tagged_residual(arn):
                 disposition = "scheduled-deletion-expected"
@@ -1209,7 +1209,7 @@ class LiveE2EAws:
         attempts = 0
         self.progress.phase("tagged-orphan-sweep", "removing LiveE2E-tagged leftovers")
         while time.monotonic() < deadline:
-            arns = self._tagged_resource_arns(run_id)
+            arns = self._tagged_resource_arns(run_id, require_stack_tag=False)
             lifecycles = {
                 arn: self._tagged_resource_lifecycle(arn) for arn in arns if not self._is_expected_tagged_residual(arn)
             }
@@ -1238,7 +1238,7 @@ class LiveE2EAws:
             time.sleep(max(poll_seconds, 0.2))
         remaining = [
             arn
-            for arn in self._tagged_resource_arns(run_id)
+            for arn in self._tagged_resource_arns(run_id, require_stack_tag=False)
             if not self._is_expected_tagged_residual(arn) and self._tagged_resource_lifecycle(arn) == "active"
         ]
         if remaining:
@@ -1257,7 +1257,15 @@ class LiveE2EAws:
                 "Live E2E run ID is already attached to " f"{len(existing)} resource(s); choose a new run ID"
             )
 
-    def _tagged_resource_arns(self, run_id: str) -> list[str]:
+    def _tagged_resource_arns(self, run_id: str, *, require_stack_tag: bool = True) -> list[str]:
+        """Collect resources carrying this run's tag.
+
+        CloudFormation drops its ``aws:cloudformation:*`` tags once the owning stack is
+        deleted, so post-deletion callers pass ``require_stack_tag=False``: an absent
+        stack tag is expected there, while a tag naming a *different* stack still means
+        the run ID is not ours to act on and remains fatal.
+        """
+
         if not re.fullmatch(r"[a-z0-9][a-z0-9-]{5,47}", run_id):
             raise ToolError("Cannot inspect resources for an invalid live E2E run ID")
         expected_stack_name = "OpenemrE2E-" + hashlib.sha256(run_id.encode("utf-8")).hexdigest()[:12]
@@ -1274,7 +1282,8 @@ class LiveE2EAws:
                 }
                 if not arn:
                     continue
-                if tags.get("aws:cloudformation:stack-name") != expected_stack_name:
+                stack_tag = tags.get("aws:cloudformation:stack-name")
+                if stack_tag != expected_stack_name and (require_stack_tag or stack_tag is not None):
                     raise ToolError(
                         "Refusing live E2E resource discovery: the run tag is "
                         "attached to a resource outside the owned CloudFormation stack"

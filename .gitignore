@@ -34,10 +34,12 @@ Thumbs.db
 /tmp/
 *.log
 .coverage
+.coverage.*
 htmlcov/
 .pytest_cache/
 mysql-ssl-ca/
 .import-worker-mysql-ci/
+.seed-manifest-ci/
 .openemr-import/
 
 # Source Code

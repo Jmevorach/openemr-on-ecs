@@ -16,6 +16,7 @@ This directory contains various helper scripts for deployment, testing, and vali
   - [`test-startup.sh`](#test-startupsh)
   - [`test-startup-ssl.sh`](#test-startup-sslsh)
   - [`ci-import-worker-mysql.sh`](#ci-import-worker-mysqlsh)
+  - [`update-seed-manifest.sh`](#update-seed-manifestsh)
 - [SSL Certificate Scripts](#ssl-certificate-scripts)
   - [`mysql-entrypoint-wrapper.sh`](#mysql-entrypoint-wrappersh)
   - [`mysql-ssl-setup.sh` and `redis-ssl-setup.sh`](#mysql-ssl-setupsh-and-redis-ssl-setupsh)
@@ -595,6 +596,33 @@ Compose stack.
 This is a slow integration harness. It uses synthetic data only and does not
 contact AWS. See [IMPORTING-OPENEMR.md](../IMPORTING-OPENEMR.md) for coverage
 and limitations.
+
+---
+
+### `update-seed-manifest.sh`
+
+**Purpose:** Regenerate the import worker's `fresh-seed-manifest.json` from the
+compose-pinned OpenEMR image, or fail CI when the checked-in manifest drifts
+from that image.
+
+**Usage:**
+
+```bash
+# Rewrite the manifest from a freshly bootstrapped local stack:
+./scripts/update-seed-manifest.sh
+
+# Drift check only (CI; leaves the manifest untouched):
+./scripts/update-seed-manifest.sh --check
+```
+
+The script builds the import-worker CI image, boots the TLS OpenEMR/MariaDB
+compose stack, recomputes every policy seed table's row count and SHA-256
+fingerprint with the worker's own hashing, preserves `exclude_columns` and the
+unfingerprinted bootstrap-identity tables, and verifies the worker's
+fresh-target policy against the result. It uses synthetic local data only and
+does not contact AWS. Run it whenever the pinned OpenEMR container baseline
+changes. See [IMPORTING-OPENEMR.md](../IMPORTING-OPENEMR.md) for the import
+worker design.
 
 ---
 
