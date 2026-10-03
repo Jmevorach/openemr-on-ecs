@@ -403,9 +403,11 @@ regenerate the manifest locally and commit the result:
 - Database connections require the AWS RDS CA and certificate verification.
 - The task receives no public IP, runs only in the stack's private subnets, and
   uses a dedicated no-ingress security group.
-- The worker base image digest, Python dependency artifacts, and RDS CA bundle
-  checksum are pinned; production builds exclude test harness files. Alpine
-  packages are deliberately not pinned to exact versions: the base image digest
+- The worker base image digest and Python dependency artifacts are pinned;
+  production builds exclude test harness files. The RDS CA bundle is fetched
+  over HTTPS-only from AWS's trust store at build time and is not
+  checksum-pinned, because AWS republishes it in place whenever it adds a
+  Region. Alpine packages are deliberately not pinned to exact versions: the base image digest
   already fixes the Alpine release branch, and Alpine mirrors only serve the
   current build of each package, so exact pins break the build on every
   upstream security rebuild without adding reproducibility.

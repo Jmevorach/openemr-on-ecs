@@ -829,3 +829,19 @@ def test_import_worker_apk_packages_are_not_exactly_pinned() -> None:
     assert set(packages) == {"ca-certificates", "curl", "mariadb-client"}
     pinned = [package for package in packages if any(operator in package for operator in ("=", "<", ">", "~"))]
     assert not pinned, f"apk version constraints break once Alpine mirrors drop the superseded build: {pinned}"
+
+
+def test_import_worker_rds_ca_bundle_is_fetched_over_https_only_without_a_checksum() -> None:
+    """AWS republishes the bundle in place (the September 2026 me-west-1 addition broke a pinned checksum).
+
+    Provenance comes from TLS to AWS's trust store, so the fetch must refuse
+    plain HTTP on the initial request and on any redirect.
+    """
+    fetches = [line for line in _dockerfile_instructions() if "global-bundle.pem" in line]
+
+    assert len(fetches) == 1
+    fetch = fetches[0]
+    assert "https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem" in fetch
+    for flag in ("--fail", "--proto =https", "--proto-redir =https", "--tlsv1.2"):
+        assert flag in fetch, flag
+    assert "sha256sum" not in fetch

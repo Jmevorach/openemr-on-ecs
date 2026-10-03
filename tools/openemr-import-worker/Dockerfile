@@ -6,15 +6,18 @@ FROM python:3.14-alpine@sha256:a1321512d6a287428c50dcdf2ab3857761127e03a23b1f648
 # upstream security or bugfix rebuild into a build failure without making the
 # image any more reproducible. tests/tools/test_openemr_import_worker.py
 # enforces this.
+#
+# The RDS CA bundle is likewise not checksum-pinned: AWS republishes it in
+# place whenever a Region is added. Its provenance is the HTTPS connection to
+# AWS's trust store, so curl must refuse plain HTTP, including on redirects.
 RUN apk add --no-cache \
       ca-certificates \
       curl \
       mariadb-client \
     && curl --fail --silent --show-error --location \
+      --proto =https --proto-redir =https --tlsv1.2 \
       --output /etc/ssl/certs/aws-rds-global.pem \
       https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem \
-    && echo "fe45bbebf92ad3e27a583bbb2ddd1553c521ed4d49af5514dc0a40372ea5395c  /etc/ssl/certs/aws-rds-global.pem" \
-      | sha256sum -c - \
     && adduser -D -u 1000 importer \
     && mkdir -p /work /fixtures \
     && chown importer:importer /work /fixtures
