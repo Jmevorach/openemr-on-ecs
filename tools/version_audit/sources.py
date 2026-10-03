@@ -442,7 +442,7 @@ class VersionSources:
             raise SourceError("No ARM64 OpenEMR image matched an official stable OpenEMR release")
         expected_digest = str(declaration.metadata.get("arm64_digest", "")).strip()
         digest_url = (
-            "https://hub.docker.com/v2/repositories/openemr/openemr/tags/" f"{quote(declaration.current, safe='')}"
+            f"https://hub.docker.com/v2/repositories/openemr/openemr/tags/{quote(declaration.current, safe='')}"
         )
         if not re.fullmatch(r"sha256:[0-9a-f]{64}", expected_digest):
             return Resolution(

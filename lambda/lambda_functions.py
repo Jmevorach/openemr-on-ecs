@@ -83,7 +83,8 @@ def generate_smtp_credential(event, context):
         client = boto3.client("secretsmanager", region_name=region_name)
         # Update the secret
         response = client.update_secret(
-            SecretId=secret_name, SecretString=json.dumps(new_value)  # Ensure it's a JSON string
+            SecretId=secret_name,
+            SecretString=json.dumps(new_value),  # Ensure it's a JSON string
         )
         print(f"Secret {secret_name} updated successfully.")
         return response

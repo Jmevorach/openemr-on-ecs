@@ -96,10 +96,8 @@ jobs:
 
       - name: Validate focused Python changes
         run: |
-          black --check tools/_shared.py tools/knowledge_mcp tests/tools/test_knowledge_mcp.py
-          flake8 tools/_shared.py tools/knowledge_mcp tests/tools/test_knowledge_mcp.py \
-            --max-line-length=120 --extend-ignore=E203,W503,E501
-          isort --check-only tools/_shared.py tools/knowledge_mcp tests/tools/test_knowledge_mcp.py
+          ruff format --check tools/_shared.py tools/knowledge_mcp tests/tools/test_knowledge_mcp.py
+          ruff check tools/_shared.py tools/knowledge_mcp tests/tools/test_knowledge_mcp.py
           mypy tools/_shared.py tools/knowledge_mcp
 
   floci-e2e:
@@ -337,11 +335,11 @@ jobs:
           python -m pip install "pip==${PIP_VERSION}"
           pip install -r requirements.txt -r requirements-dev.txt
 
-      - name: Format check (black)
-        run: black --check app.py openemr_ecs/ tests/ diagrams/ tools/ scripts/check_npm_audit.py scripts/test-cdk-synthesis.py
+      - name: Format check (ruff)
+        run: ruff format --check .
 
-      - name: Lint (flake8)
-        run: flake8 app.py openemr_ecs/ tests/ diagrams/ tools/ scripts/check_npm_audit.py scripts/test-cdk-synthesis.py --max-line-length=120 --extend-ignore=E203,W503,E501
+      - name: Lint (ruff)
+        run: ruff check .
 
       - name: Type check (mypy)
         run: >-
@@ -350,9 +348,6 @@ jobs:
           tools/openemr_import/ tools/openemr-import-worker/worker.py
           tools/credential-rotation/src/ scripts/check_npm_audit.py
           scripts/test-cdk-synthesis.py
-
-      - name: Import sorting (isort)
-        run: isort --check-only app.py openemr_ecs/ tests/ diagrams/ tools/ scripts/check_npm_audit.py scripts/test-cdk-synthesis.py
 
   security-scan:
     name: Security Scan
@@ -372,8 +367,8 @@ jobs:
           python -m pip install "pip==${PIP_VERSION}"
           pip install -r requirements.txt -r requirements-dev.txt
 
-      - name: Security scan (bandit)
-        run: bandit -r app.py openemr_ecs/ diagrams/ tools/ scripts/check_npm_audit.py scripts/test-cdk-synthesis.py -ll
+      - name: Security lint (ruff flake8-bandit rules)
+        run: ruff check --select S .
 
       - name: Audit Python dependencies
         run: |

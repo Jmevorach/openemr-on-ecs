@@ -310,7 +310,7 @@ class LiveE2ERunner:
             atomic_write_json(path, record)
             os.chmod(path, 0o600)
             self.progress.info(
-                f"Preflight complete ({len(checks)} checks, {resource_count} resources); " f"approval file ready"
+                f"Preflight complete ({len(checks)} checks, {resource_count} resources); approval file ready"
             )
             return path
 
@@ -1017,7 +1017,7 @@ class LiveE2ERunner:
             change, path = line[:2], line[3:]
             if change not in {" M", "M ", "MM"} or path not in allowed_generated:
                 raise ToolError(
-                    "Live E2E cleanup requires a clean worktree except for its " "generated timing history and report"
+                    "Live E2E cleanup requires a clean worktree except for its generated timing history and report"
                 )
         commit = run_command(
             ("git", "rev-parse", "HEAD"),

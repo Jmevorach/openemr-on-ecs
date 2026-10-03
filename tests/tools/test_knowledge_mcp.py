@@ -37,7 +37,7 @@ def knowledge_root(tmp_path: Path) -> Path:
 
     (tmp_path / "openemr_ecs").mkdir()
     (tmp_path / "openemr_ecs" / "constants.py").write_text(
-        "class StackConstants:\n" '    OPENEMR_VERSION = "8.1.1"\n' '    EMR_SERVERLESS_RELEASE_LABEL = "emr-7.13.0"\n',
+        'class StackConstants:\n    OPENEMR_VERSION = "8.1.1"\n    EMR_SERVERLESS_RELEASE_LABEL = "emr-7.13.0"\n',
         encoding="utf-8",
     )
     (tmp_path / "tools" / "credential-rotation").mkdir(parents=True)
@@ -61,7 +61,7 @@ def knowledge_root(tmp_path: Path) -> Path:
                     "nested": {"password": {"value": "nested-secret-must-not-leak"}},
                     "@aws-cdk/core:checkSecretUsage": True,
                     "certificate_arn": (
-                        "arn:aws:acm:us-east-1:123456789012:" "certificate/00000000-0000-0000-0000-000000000000"
+                        "arn:aws:acm:us-east-1:123456789012:certificate/00000000-0000-0000-0000-000000000000"
                     ),
                 },
             }

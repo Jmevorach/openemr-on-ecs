@@ -5,13 +5,10 @@ pre-commit==4.6.2
 pytest-mock==3.16.0
 packaging==26.3
 fastmcp==4.0.10
-black==26.5.1
-flake8==7.4.1
+ruff==0.16.10
 mypy==2.3.1
 boto3-stubs==1.43.106
 types-PyMySQL==1.2.0.20260923
-isort==9.0.2
-bandit==1.9.4
 pip-audit==2.10.1
 testcontainers-floci==0.1.1
 

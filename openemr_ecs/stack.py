@@ -257,7 +257,9 @@ class OpenemrEcsStack(Stack):
                 print(
                     f"WARNING: Both route53_domain and certificate_arn provided. Using certificate_arn: {context.get('certificate_arn')}"
                 )
-            self.certificate = acm.Certificate.from_certificate_arn(self, "domainCert", str(context.get("certificate_arn")))  # type: ignore
+            self.certificate = acm.Certificate.from_certificate_arn(
+                self, "domainCert", str(context.get("certificate_arn"))
+            )  # type: ignore
 
         # Safety check: Certificate is required for HTTPS (should have been caught by validation, but verify)
         if not self.certificate:

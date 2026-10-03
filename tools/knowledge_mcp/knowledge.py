@@ -57,7 +57,6 @@ _ALLOWED_EXTENSIONS = {
     ".yml",
 }
 _TOP_LEVEL_FILES = {
-    ".flake8",
     ".gitignore",
     ".pre-commit-config.yaml",
     "ARCHITECTURE.md",
@@ -224,7 +223,7 @@ _TOPICS: dict[str, dict[str, Any]] = {
     },
     "live-e2e": {
         "summary": (
-            "An approval-gated local runner deploys, validates, measures, and " "cleans up an isolated real-AWS stack."
+            "An approval-gated local runner deploys, validates, measures, and cleans up an isolated real-AWS stack."
         ),
         "sources": [
             "LIVE-E2E.md",
@@ -392,7 +391,7 @@ class RepositoryKnowledge:
                                 and relative.suffix.lower() in _DOCUMENTATION_EXTENSIONS
                             ):
                                 raise KnowledgeError(
-                                    "Documentation source cannot be inspected: " f"{relative.as_posix()}"
+                                    f"Documentation source cannot be inspected: {relative.as_posix()}"
                                 ) from exc
                             continue
             except OSError as exc:
@@ -864,7 +863,7 @@ class RepositoryKnowledge:
             {
                 "purpose": "Execute a guarded OpenEMR import",
                 "command": "python3 -m tools.openemr_import execute --help",
-                "risk": ("destructive AWS/OpenEMR mutation and downtime; all documented " "confirmations are required"),
+                "risk": ("destructive AWS/OpenEMR mutation and downtime; all documented confirmations are required"),
             },
             {
                 "purpose": "Reconcile an uncertain import task launch",

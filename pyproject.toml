@@ -1,26 +1,30 @@
-[tool.black]
+[tool.ruff]
 line-length = 120
-target-version = ['py314']
-include = '\.pyi?$'
-extend-exclude = '''
-/(
-  # directories
-  \.eggs
-  | \.git
-  | \.hg
-  | \.mypy_cache
-  | \.tox
-  | \.venv
-  | build
-  | dist
-  | cdk.out
-)/
-'''
+target-version = "py314"
+extend-exclude = ["cdk.out", "build", "dist", ".live-e2e", ".seed-manifest-ci"]
 
-[tool.isort]
-profile = "black"
-line_length = 120
-skip_glob = ["cdk.out/*", ".venv/*", "build/*", "dist/*"]
+[tool.ruff.lint]
+# pycodestyle, pyflakes, import sorting, and the flake8-bandit security rules.
+select = ["E", "F", "W", "I", "S"]
+ignore = [
+    "E501",  # line length is enforced by the formatter
+    # Low-severity bandit checks, matching the previous `bandit -ll` threshold.
+    "S101",  # assert
+    "S105",  # hardcoded password string
+    "S106",  # hardcoded password argument
+    "S107",  # hardcoded password default
+    "S110",  # try/except/pass
+    "S112",  # try/except/continue
+    "S311",  # non-cryptographic random
+    "S404",  # subprocess import
+    "S603",  # subprocess call without shell
+    "S607",  # partial executable path
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests were never part of the security scan; they exercise subprocesses, temp files, and fake secrets.
+"tests/**" = ["S"]
+"tools/credential-rotation/tests/**" = ["S"]
 
 [tool.mypy]
 python_version = "3.14"
@@ -48,3 +52,4 @@ markers = [
     "floci: marks tests that require a Floci AWS emulator container",
     "unit: marks tests as unit tests",
 ]
+

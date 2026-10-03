@@ -147,11 +147,7 @@ def test_resource_created():
     """Test that a specific resource is created."""
     # Arrange
     app = cdk.App()
-    stack = OpenemrEcsStack(
-        app,
-        "TestStack",
-        env=cdk.Environment(account="111111111111", region="us-west-2")
-    )
+    stack = OpenemrEcsStack(app, "TestStack", env=cdk.Environment(account="111111111111", region="us-west-2"))
     template = assertions.Template.from_stack(stack)
 
     # Assert
@@ -160,7 +156,7 @@ def test_resource_created():
         {
             "Engine": "aurora-mysql",
             # Add expected properties
-        }
+        },
     )
 ```
 
@@ -180,20 +176,19 @@ template.has_resource_properties(
     {
         # Match any cluster name containing "cluster"
         "ClusterName": assertions.Match.string_like_regexp(".*cluster.*")
-    }
+    },
 )
 
 # Or match specific properties while ignoring others
 template.has_resource_properties(
     "AWS::ECS::Cluster",
-    assertions.Match.object_like({
-        "ClusterSettings": assertions.Match.array_with([
-            assertions.Match.object_like({
-                "Name": "containerInsights",
-                "Value": "enabled"
-            })
-        ])
-    })
+    assertions.Match.object_like(
+        {
+            "ClusterSettings": assertions.Match.array_with(
+                [assertions.Match.object_like({"Name": "containerInsights", "Value": "enabled"})]
+            )
+        }
+    ),
 )
 ```
 
@@ -202,23 +197,19 @@ template.has_resource_properties(
 # Check that an output exists with expected properties
 template.has_output(
     "LoadBalancerDNS",
-    assertions.Match.object_like({
-        "Description": assertions.Match.any_value(),
-        "Value": assertions.Match.any_value()
-    })
+    assertions.Match.object_like({"Description": assertions.Match.any_value(), "Value": assertions.Match.any_value()}),
 )
 
 # Or check for specific output value patterns
 template.has_output(
     "ClusterArn",
-    assertions.Match.object_like({
-        "Value": assertions.Match.object_like({
-            "Fn::GetAtt": assertions.Match.array_with([
-                assertions.Match.string_like_regexp(".*Cluster.*"),
-                "Arn"
-            ])
-        })
-    })
+    assertions.Match.object_like(
+        {
+            "Value": assertions.Match.object_like(
+                {"Fn::GetAtt": assertions.Match.array_with([assertions.Match.string_like_regexp(".*Cluster.*"), "Arn"])}
+            )
+        }
+    ),
 )
 ```
 
@@ -228,17 +219,19 @@ template.has_resource_properties(
     "AWS::IAM::Role",
     {
         "AssumeRolePolicyDocument": {
-            "Statement": assertions.Match.array_with([
-                assertions.Match.object_like({
-                    "Action": "sts:AssumeRole",
-                    "Effect": "Allow",
-                    "Principal": {
-                        "Service": "ecs-tasks.amazonaws.com"
-                    }
-                })
-            ])
+            "Statement": assertions.Match.array_with(
+                [
+                    assertions.Match.object_like(
+                        {
+                            "Action": "sts:AssumeRole",
+                            "Effect": "Allow",
+                            "Principal": {"Service": "ecs-tasks.amazonaws.com"},
+                        }
+                    )
+                ]
+            )
         }
-    }
+    },
 )
 ```
 
@@ -247,14 +240,10 @@ template.has_resource_properties(
 template.has_resource_properties(
     "AWS::EC2::SecurityGroup",
     {
-        "SecurityGroupIngress": assertions.Match.array_with([
-            assertions.Match.object_like({
-                "FromPort": 443,
-                "ToPort": 443,
-                "IpProtocol": "tcp"
-            })
-        ])
-    }
+        "SecurityGroupIngress": assertions.Match.array_with(
+            [assertions.Match.object_like({"FromPort": 443, "ToPort": 443, "IpProtocol": "tcp"})]
+        )
+    },
 )
 ```
 
@@ -264,12 +253,7 @@ from aws_cdk.assertions import Capture
 
 # Capture a value for later assertions
 security_group_capture = Capture()
-template.has_resource_properties(
-    "AWS::EC2::SecurityGroup",
-    {
-        "GroupDescription": security_group_capture
-    }
-)
+template.has_resource_properties("AWS::EC2::SecurityGroup", {"GroupDescription": security_group_capture})
 
 # Use the captured value
 assert "OpenEMR" in security_group_capture.as_string()
@@ -318,20 +302,19 @@ mypy openemr_ecs/
 ```python
 import pytest
 
+
 @pytest.fixture
 def app():
     """Create a fresh CDK app for each test."""
     return cdk.App()
 
+
 @pytest.fixture
 def template(app):
     """Create a stack template for testing."""
-    stack = OpenemrEcsStack(
-        app,
-        "TestStack",
-        env=cdk.Environment(account="111111111111", region="us-west-2")
-    )
+    stack = OpenemrEcsStack(app, "TestStack", env=cdk.Environment(account="111111111111", region="us-west-2"))
     return assertions.Template.from_stack(stack)
+
 
 def test_with_fixture(template):
     """Test using the fixture."""
@@ -360,12 +343,15 @@ def test_with_fixture(template):
 ```python
 import pytest
 
+
 def test_invalid_cpu_memory_combination_raises_error():
     """Test that invalid CPU/memory combinations are rejected."""
-    app = cdk.App(context={
-        "cpu": 256,
-        "memory": 8192  # Invalid: 256 CPU doesn't support 8GB memory
-    })
+    app = cdk.App(
+        context={
+            "cpu": 256,
+            "memory": 8192,  # Invalid: 256 CPU doesn't support 8GB memory
+        }
+    )
 
     with pytest.raises(ValueError, match="Invalid CPU/memory combination"):
         OpenemrEcsStack(app, "TestStack")
@@ -406,6 +392,7 @@ pytest tests/ --lf
 
 ```python
 import json
+
 
 def test_debug_template(template):
     """Debug test to view full template."""

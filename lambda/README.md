@@ -134,11 +134,8 @@ Lambda functions can be tested locally using the AWS SAM CLI or by creating test
 ```python
 # Example test event
 test_event = {
-    "ResourceProperties": {
-        "StackName": "OpenemrEcsStack",
-        "RuleSetName": "my-rule-set"
-    },
-    "RequestType": "Create"
+    "ResourceProperties": {"StackName": "OpenemrEcsStack", "RuleSetName": "my-rule-set"},
+    "RequestType": "Create",
 }
 
 # Test handler

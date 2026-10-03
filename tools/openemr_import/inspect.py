@@ -629,7 +629,7 @@ def inspect_source(
             manual_review.append("Native backup contained additional top-level artifacts that will be ignored")
         if artifacts.source_kind == "native-openemr-backup" and archive_scan.openemr_version is None:
             unsupported.append(
-                "Native backup must contain version.php; --source-version cannot " "authorize automatic execution"
+                "Native backup must contain version.php; --source-version cannot authorize automatic execution"
             )
         if version is None:
             unsupported.append("Source OpenEMR version was not detected")

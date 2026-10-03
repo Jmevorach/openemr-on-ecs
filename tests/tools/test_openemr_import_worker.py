@@ -19,7 +19,7 @@ from typing import Any
 import pytest
 
 _VALID_SEVEN_KEY = b"007" + base64.b64encode(b"k" * 112)
-_VERSION_PHP = b"<?php $v_major='8'; $v_minor='2'; $v_patch='0'; " b"$v_tag=''; $v_realpatch='0'; $v_database=541;"
+_VERSION_PHP = b"<?php $v_major='8'; $v_minor='2'; $v_patch='0'; $v_tag=''; $v_realpatch='0'; $v_database=541;"
 _VERSION_SQL = (
     b"CREATE TABLE `version` (`v_major` int, `v_minor` int, `v_patch` int, "
     b"`v_realpatch` int, `v_tag` varchar(31), `v_database` int, `v_acl` int);\n"
