@@ -751,6 +751,7 @@ class AnalyticsComponents:
                         f"Resource::arn:aws:emr-serverless:{region}:<AWS::AccountId>:/*",
                         f"Resource::arn:aws:emr-serverless:{region}:<AWS::AccountId>:/applications/*",
                         "Resource::arn:aws:ecr:*:<AWS::AccountId>:*/*",
+                        "Resource::*",
                     ],
                 },
                 {
