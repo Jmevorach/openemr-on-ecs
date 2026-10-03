@@ -121,8 +121,11 @@ configured in `pyproject.toml`.
 
 ### Security Scan (`security-scan`)
 
-- `ruff check --select S .` runs Ruff's flake8-bandit security rules (this
-  replaces the earlier standalone bandit scan).
+- Python security linting (Ruff's flake8-bandit `S` rules, which replace the
+  earlier standalone bandit scan) runs as part of `ruff check .` in the
+  Code Quality Checks job, so it honors the reviewed ignore list in
+  `pyproject.toml`. Don't add a separate `ruff check --select S` step: a
+  command-line `--select` overrides that ignore list.
 - `pip-audit --strict` checks `requirements.txt`, `requirements-dev.txt`,
   `tools/credential-rotation/requirements.txt`, and
   `tools/openemr-import-worker/requirements.txt` for known vulnerabilities.

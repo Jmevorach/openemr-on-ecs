@@ -324,9 +324,6 @@ jobs:
           python -m pip install "pip==${PIP_VERSION}"
           pip install -r requirements.txt -r requirements-dev.txt
 
-      - name: Security lint (ruff flake8-bandit rules)
-        run: ruff check --select S .
-
       - name: Audit Python dependencies
         run: |
           pip-audit --strict --progress-spinner off \

@@ -311,7 +311,7 @@ Tests run automatically in GitHub Actions. Check `.github/workflows/ci.yml` for 
    `tools/credential-rotation/tests/` with the 100% coverage gate
 2. **CDK Synthesis**: Validate stack synthesis and the 16-configuration matrix
 3. **Code Quality**: `ruff format --check`, `ruff check`, and `mypy`
-4. **Security Scan**: `ruff check --select S` and `pip-audit`
+4. **Security Scan**: `pip-audit` (Ruff's security rules run with Code Quality)
 
 Every job is described in [CI and automation](../docs/maintainers/ci.md).
 

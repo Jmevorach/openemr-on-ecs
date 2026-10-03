@@ -130,7 +130,6 @@ don't run the `S` rules.
 ```bash
 .venv/bin/ruff format --check .
 .venv/bin/ruff check .
-.venv/bin/ruff check --select S .
 .venv/bin/mypy app.py openemr_ecs/ diagrams/ tools/_shared.py \
   tools/version_audit/ tools/openemr_import/ \
   tools/openemr-import-worker/worker.py tools/credential-rotation/src/ \
@@ -143,8 +142,9 @@ don't run the `S` rules.
 .venv/bin/python scripts/check_npm_audit.py
 ```
 
-`ruff check --select S .` is the dedicated security pass that CI runs in its
-Security Scan job; the full `ruff check .` already includes those rules. Use
+`ruff check .` includes the security rules. Don't run them on their own with
+`ruff check --select S`: a command-line `--select` overrides the reviewed
+ignore list in `pyproject.toml` and reports findings CI accepts. Use
 `ruff format .` and `ruff check --fix .` to apply fixes.
 
 `scripts/check_npm_audit.py` fails on any reported npm vulnerability. Update
