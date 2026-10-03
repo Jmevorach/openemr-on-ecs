@@ -1069,20 +1069,6 @@ def _failed_worker_authorizes_abort(status: dict[str, Any]) -> bool:
     }
 
 
-def _failed_import_authorizes_abort(status: dict[str, Any]) -> bool:
-    service = status.get("service", {})
-    autoscaling = status.get("autoscaling", {})
-    return (
-        _failed_worker_authorizes_abort(status)
-        and isinstance(service, dict)
-        and service.get("desired_count") == 0
-        and service.get("running_count") == 0
-        and service.get("pending_count") == 0
-        and isinstance(autoscaling, dict)
-        and autoscaling.get("suspended") is True
-    )
-
-
 def _interrupted_mutation_authorizes_recovery(status: dict[str, Any]) -> bool:
     worker = status.get("worker", {})
     task = status.get("task", {})

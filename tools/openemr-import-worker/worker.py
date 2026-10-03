@@ -19,6 +19,7 @@ import secrets
 import shutil
 import subprocess
 import tarfile
+import zlib
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import IO, Any
@@ -776,7 +777,7 @@ def _validate_sql(sql_artifact: Path, output: Path) -> tuple[str, int]:
                     raise ImportFailure("unsupported-sql-stored-code")
                 security_carry = security_scan[-512:]
                 destination.write(chunk)
-    except (gzip.BadGzipFile, EOFError, OSError) as exc:
+    except (gzip.BadGzipFile, EOFError, OSError, zlib.error) as exc:
         raise ImportFailure("malformed-sql-artifact") from exc
     if compressed and sql_artifact.stat().st_size and total > (sql_artifact.stat().st_size * MAX_COMPRESSION_RATIO):
         raise ImportFailure("sql-compression-ratio")

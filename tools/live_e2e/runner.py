@@ -742,8 +742,7 @@ class LiveE2ERunner:
                     cleanup_status = "failed"
                     status = "failed"
                     failure_phase = failure_phase or "cleanup"
-                    if failure is None:
-                        failure = retention_exc
+                    self.progress.info(f"Retention check failed: {type(retention_exc).__name__}")
                 phases.append(
                     PhaseTiming(
                         "cleanup-request",
@@ -1603,7 +1602,7 @@ def validate_run_id(run_id: str) -> str:
 def new_run_id() -> str:
     """Create a collision-resistant, non-sensitive local run ID."""
 
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dt%H%M%sz").lower()
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dt%H%M%Sz").lower()
     entropy = fingerprint({"time_ns": time.time_ns(), "pid": os.getpid()}, length=8)
     return f"e2e-{stamp}-{entropy}"
 
