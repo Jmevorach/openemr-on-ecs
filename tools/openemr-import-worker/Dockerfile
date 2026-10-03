@@ -13,7 +13,7 @@ RUN apk add --no-cache \
     && curl --fail --silent --show-error --location \
       --output /etc/ssl/certs/aws-rds-global.pem \
       https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem \
-    && echo "e5bb2084ccf45087bda1c9bffdea0eb15ee67f0b91646106e466714f9de3c7e3  /etc/ssl/certs/aws-rds-global.pem" \
+    && echo "fe45bbebf92ad3e27a583bbb2ddd1553c521ed4d49af5514dc0a40372ea5395c  /etc/ssl/certs/aws-rds-global.pem" \
       | sha256sum -c - \
     && adduser -D -u 1000 importer \
     && mkdir -p /work /fixtures \
