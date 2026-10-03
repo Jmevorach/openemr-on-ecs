@@ -38,7 +38,8 @@ exclude = [
 ]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "tools/credential-rotation/tests"]
+pythonpath = ["tools/credential-rotation/src"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
@@ -53,3 +54,31 @@ markers = [
     "unit: marks tests as unit tests",
 ]
 
+[tool.coverage.run]
+# Coverage only walks into directories with an __init__.py, so script directories are listed explicitly.
+source_dirs = [".", "diagrams", "lambda", "scripts", "tools/openemr-import-worker"]
+omit = [
+    "tests/*",
+    "*/tests/*",
+    ".venv/*",
+    "node_modules/*",
+    "cdk.out/*",
+    ".live-e2e/*",
+    ".seed-manifest-ci/*",
+    # Reviewed exclusions: these only run against real infrastructure, so unit
+    # coverage would exercise mocks rather than behavior. The two harnesses run
+    # inside the Docker MySQL CI jobs; the API scripts target a live deployment.
+    "tools/openemr-import-worker/ci_live_mysql_import.py",
+    "tools/openemr-import-worker/ci_prepare_mysql_fixtures.py",
+    "scripts/api_endpoint_test.py",
+    "scripts/test_data_api.py",
+]
+
+[tool.coverage.report]
+fail_under = 100
+show_missing = true
+exclude_also = [
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+]
+skip_covered = true
