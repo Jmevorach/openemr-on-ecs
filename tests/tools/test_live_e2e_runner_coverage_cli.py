@@ -281,7 +281,7 @@ def test_report_command_prints_history_or_summary(
     assert cli.main(["report", "--json"]) == 0
     assert capsys.readouterr().out == '{"runs": [], "schema_version": 1}\n'
     assert cli.main(["report"]) == 0
-    assert capsys.readouterr().out == "Regenerated docs/deployment-timing.md.\n"
+    assert capsys.readouterr().out == "Regenerated docs/maintainers/deployment-timing.md.\n"
     assert [instance.calls for instance in fake_runner.instances] == [[("report", {})], [("report", {})]]
 
 

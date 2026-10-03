@@ -513,7 +513,9 @@ def test_approved_run_deploys_validates_cleans_up_and_records_history(
     history = load_history(root / "e2e-results" / "history.json")
     assert [run["run_id"] for run in history["runs"]] == [RUN_ID]
     assert history["runs"][0]["status"] == "passed"
-    assert "Latest successful measurement" in (root / "docs" / "deployment-timing.md").read_text(encoding="utf-8")
+    assert "Latest successful measurement" in (root / "docs" / "maintainers" / "deployment-timing.md").read_text(
+        encoding="utf-8"
+    )
     raw = json.loads((root / ".live-e2e" / "runs" / RUN_ID / "result.json").read_text(encoding="utf-8"))
     assert raw["stack_name"] == stack_name(RUN_ID)
     assert raw["result"]["status"] == "passed"
@@ -832,7 +834,7 @@ def test_regenerate_report_runs_under_lock(tmp_path: Path) -> None:
     root = _repo(tmp_path)
     runner = _FlowRunner(root, _Adapter())
     runner.regenerate_report()
-    report = (root / "docs" / "deployment-timing.md").read_text(encoding="utf-8")
+    report = (root / "docs" / "maintainers" / "deployment-timing.md").read_text(encoding="utf-8")
     assert "No live E2E deployment has been approved or measured yet." in report
     assert (root / ".live-e2e" / "live-e2e.lock").is_file()
 

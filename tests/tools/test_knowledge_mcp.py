@@ -352,14 +352,14 @@ def test_curated_sources_and_commands_match_current_scope() -> None:
 
     assert knowledge.overview()["version"] == declared_version
     assert knowledge.topic("mcp")["topic"] == "knowledge-mcp"
-    assert "KNOWLEDGE-MCP.md" in knowledge.topic("knowledge-mcp")["sources"]
-    assert "KNOWLEDGE-MCP.md" in knowledge.overview()["primary_guides"]
+    assert "docs/maintainers/knowledge-mcp.md" in knowledge.topic("knowledge-mcp")["sources"]
+    assert "docs/maintainers/knowledge-mcp.md" in knowledge.overview()["primary_guides"]
     assert knowledge.topic("import")["topic"] == "openemr-import"
-    assert "IMPORTING-OPENEMR.md" in knowledge.overview()["primary_guides"]
+    assert "docs/guides/importing-openemr.md" in knowledge.overview()["primary_guides"]
     assert knowledge.topic("live e2e")["topic"] == "live-e2e"
-    assert "LIVE-E2E.md" in knowledge.overview()["primary_guides"]
+    assert "docs/maintainers/live-e2e.md" in knowledge.overview()["primary_guides"]
     assert knowledge.topic("floci")["topic"] == "floci-emulation"
-    assert "FLOCI.md" in knowledge.overview()["primary_guides"]
+    assert "docs/maintainers/floci.md" in knowledge.overview()["primary_guides"]
     for source in knowledge.topic("floci")["sources"]:
         knowledge.read_file(source, max_lines=1)
     for source in knowledge.topic("credential-rotation")["sources"]:

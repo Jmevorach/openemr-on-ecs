@@ -280,7 +280,7 @@ def render_markdown(history: dict[str, Any]) -> str:
             "## Source and reproduction",
             "",
             "- Machine-readable history: `e2e-results/history.json`",
-            "- Runner guide: `LIVE-E2E.md`",
+            "- Runner guide: `docs/maintainers/live-e2e.md`",
             "- Regenerate this report without contacting AWS:",
             "",
             "```bash",

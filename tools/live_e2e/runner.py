@@ -103,7 +103,7 @@ class LiveE2ERunner:
         self.root = repository_root(root)
         self.local_root = self.root / ".live-e2e"
         self.history_path = self.root / "e2e-results" / "history.json"
-        self.report_path = self.root / "docs" / "deployment-timing.md"
+        self.report_path = self.root / "docs" / "maintainers" / "deployment-timing.md"
         self.aws_factory = aws_factory
         self.progress = progress or NULL_PROGRESS
 
@@ -1007,7 +1007,7 @@ class LiveE2ERunner:
         if not status.ok:
             raise ToolError("Cannot inspect Git worktree")
         allowed_generated = {
-            "docs/deployment-timing.md",
+            "docs/maintainers/deployment-timing.md",
             "e2e-results/history.json",
         }
         for line in status.stdout.splitlines():

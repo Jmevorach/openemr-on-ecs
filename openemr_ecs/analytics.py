@@ -748,7 +748,7 @@ class AnalyticsComponents:
             [
                 {
                     "id": "AwsSolutions-IAM5",
-                    "reason": "Wildcard permissions for EMR Serverless applications (arn:aws:emr-serverless:*:*/applications/*), ECR images (arn:aws:ecr:*:*/*), and ECS DescribeTasks are required for SageMaker Studio data science workflows. See docs/cdk-nag-suppressions.md.",
+                    "reason": "Wildcard permissions for EMR Serverless applications (arn:aws:emr-serverless:*:*/applications/*), ECR images (arn:aws:ecr:*:*/*), and ECS DescribeTasks are required for SageMaker Studio data science workflows. See docs/reference/cdk-nag-suppressions.md.",
                     "appliesTo": [
                         f"Resource::arn:aws:emr-serverless:{region}:<AWS::AccountId>:/*",
                         f"Resource::arn:aws:emr-serverless:{region}:<AWS::AccountId>:/applications/*",

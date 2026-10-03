@@ -1060,7 +1060,7 @@ def test_cleanup_allows_only_generated_timing_changes(
 ) -> None:
     root = _root(tmp_path)
     runner = LiveE2ERunner(root=root)
-    status_output = " M docs/deployment-timing.md\n M e2e-results/history.json\n"
+    status_output = " M docs/maintainers/deployment-timing.md\n M e2e-results/history.json\n"
 
     def fake_run_command(
         argv: tuple[str, ...],
